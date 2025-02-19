@@ -27,6 +27,8 @@ const Precedence = enum(u8) {
     primary,
 };
 
+const U8_COUNT = 256;
+
 const ParseFn = ?*const fn (*Compiler, bool) InterpretError!void;
 
 const ParseRule = struct {
@@ -40,6 +42,11 @@ const Parser = struct {
     previous: Token = undefined,
     hadError: bool = false,
     panicMode: bool = false,
+};
+
+const Local = struct {
+    name: Token,
+    depth: usize,
 };
 
 const rules = [_]ParseRule{
@@ -91,10 +98,13 @@ fn getRule(ttype: TokenType) *const ParseRule {
 }
 
 allocator: Allocator,
+locals: [U8_COUNT]Local = undefined,
+local_count: usize = 0,
+scope_depth: usize = 0,
 parser: Parser,
 scanner: Scanner,
 stderr: std.io.AnyWriter,
-currentChunk: *Chunk,
+current_chunk: *Chunk,
 vm: *VM,
 
 pub fn compile(allocator: Allocator, vm: *VM, source: []const u8, chunk: *Chunk, stderr: std.io.AnyWriter) InterpretError!void {
@@ -104,7 +114,7 @@ pub fn compile(allocator: Allocator, vm: *VM, source: []const u8, chunk: *Chunk,
         .scanner = Scanner.init(source),
         .stderr = stderr,
         .parser = .{},
-        .currentChunk = chunk,
+        .current_chunk = chunk,
     };
 
     compiler.advance();
@@ -122,8 +132,16 @@ fn end(self: *Compiler) !void {
     try self.emitByte(@intFromEnum(OpCode.return_));
 }
 
+fn beginScope(self: *Compiler) void {
+    self.scope_depth += 1;
+}
+
+fn endScope(self: *Compiler) void {
+    self.scope_depth -= 1;
+}
+
 fn emitByte(self: *Compiler, byte: u8) !void {
-    self.currentChunk.writeChunk(byte, self.parser.previous.line) catch return InterpretError.InternalError;
+    self.current_chunk.writeChunk(byte, self.parser.previous.line) catch return InterpretError.InternalError;
 }
 
 fn emitBytes(self: *Compiler, byte1: u8, byte2: u8) !void {
@@ -136,7 +154,7 @@ fn emitConstant(self: *Compiler, value: Value) !void {
 }
 
 fn makeConstant(self: *Compiler, value: Value) !u8 {
-    const constant = self.currentChunk.addConstant(value) catch return InterpretError.InternalError;
+    const constant = self.current_chunk.addConstant(value) catch return InterpretError.InternalError;
     if (constant > 255) {
         try self.err("Too many constants in one chunk.");
     }
@@ -213,9 +231,21 @@ fn declaration(self: *Compiler) InterpretError!void {
 fn statement(self: *Compiler) !void {
     if (self.match(.print)) {
         try self.printStatement();
+    } else if (self.match(.left_brace)) {
+        self.beginScope();
+        try self.block();
+        self.endScope();
     } else {
         try self.expressionStatement();
     }
+}
+
+fn block(self: *Compiler) !void {
+    while (!self.check(.right_brace) and !self.check(.eof)) {
+        try self.declaration();
+    }
+
+    try self.consume(.right_brace, "Expect '}' after block.");
 }
 
 fn parsePrecedence(self: *Compiler, prec: Precedence) !void {
@@ -245,10 +275,18 @@ fn parsePrecedence(self: *Compiler, prec: Precedence) !void {
 
 fn parseVariable(self: *Compiler, errorMessage: []const u8) !u8 {
     try self.consume(.identifier, errorMessage);
+
+    try self.declareVariable();
+    if (self.scope_depth > 0) return 0;
+
     return self.identifierConstant(&self.parser.previous);
 }
 
 fn defineVariable(self: *Compiler, global: u8) !void {
+    if (self.scope_depth > 0) {
+        return;
+    }
+
     try self.emitBytes(@intFromEnum(OpCode.define_global), global);
 }
 
@@ -259,6 +297,24 @@ fn identifierConstant(self: *Compiler, name: *Token) !u8 {
         self.vm,
     ) catch return InterpretError.InternalError });
     return constant;
+}
+
+fn addLocal(self: *Compiler, name: Token) !void {
+    defer self.local_count += 1;
+
+    if (self.local_count == U8_COUNT) {
+        try self.err("Too many local variables in function.");
+    }
+
+    var local = &self.locals[self.local_count];
+    local.name = name;
+    local.depth = self.scope_depth;
+}
+
+fn declareVariable(self: *Compiler) !void {
+    if (self.scope_depth == 0) return;
+    const name = &self.parser.previous;
+    try self.addLocal(name.*);
 }
 
 fn number(self: *Compiler, _: bool) !void {
