@@ -30,6 +30,9 @@ fn dissasembleInstruction(chunk: *Chunk, offset: usize, out: Writer) !usize {
         @intFromEnum(OpCode.nil) => return simpleInstruction("OP_NIL", offset, out),
         @intFromEnum(OpCode.true_) => return simpleInstruction("OP_TRUE", offset, out),
         @intFromEnum(OpCode.false_) => return simpleInstruction("OP_FALSE", offset, out),
+        @intFromEnum(OpCode.pop) => return simpleInstruction("OP_POP", offset, out),
+        @intFromEnum(OpCode.define_global) => return simpleInstruction("OP_DEFINE_GLOBAL", offset, out),
+        @intFromEnum(OpCode.define_global) => return constantInstruction("OP_SET_GLOBAL", chunk, offset, out),
         @intFromEnum(OpCode.equal) => return simpleInstruction("OP_EQUAL", offset, out),
         @intFromEnum(OpCode.greater) => return simpleInstruction("OP_GREATER", offset, out),
         @intFromEnum(OpCode.less) => return simpleInstruction("OP_LESS", offset, out),
@@ -39,6 +42,7 @@ fn dissasembleInstruction(chunk: *Chunk, offset: usize, out: Writer) !usize {
         @intFromEnum(OpCode.divide) => return simpleInstruction("OP_DIVIDE", offset, out),
         @intFromEnum(OpCode.not) => return simpleInstruction("OP_NOT", offset, out),
         @intFromEnum(OpCode.negate) => return simpleInstruction("OP_NEGATE", offset, out),
+        @intFromEnum(OpCode.print) => return simpleInstruction("OP_PRINT", offset, out),
         @intFromEnum(OpCode.return_) => return simpleInstruction("OP_RETURN", offset, out),
         else => {
             try out.print("Unknown opcode {any}\n", .{instruction});

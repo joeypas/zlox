@@ -65,7 +65,7 @@ pub const ObjString = struct {
             .allocator = allocator,
             .hash = hash,
         };
-        _ = try vm.strings.set(&ret.string, .{ .nil = 0 });
+        _ = try vm.strings.set(ret, .{ .nil = 0 });
 
         return ret;
     }
@@ -73,7 +73,7 @@ pub const ObjString = struct {
     pub fn copyString(allocator: Allocator, chars: []const u8, vm: *VM) !*Obj {
         const hash = hashString(chars);
         const interned = Table.findString(&vm.strings, chars, hash);
-        if (interned) |ret| return ret.obj;
+        if (interned) |ret| return ret;
 
         const heapChars = try allocator.dupe(u8, chars);
         return ObjString.create(allocator, heapChars, vm, hash);
@@ -85,7 +85,7 @@ pub const ObjString = struct {
 
         if (interned) |ret| {
             allocator.free(chars);
-            return ret.obj;
+            return ret;
         }
 
         return ObjString.create(allocator, chars, vm, hash);

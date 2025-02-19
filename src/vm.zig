@@ -27,6 +27,7 @@ chunk: *Chunk = undefined,
 ip: [*]Instruction = undefined,
 stack: [STACK_MAX]Value = undefined,
 stackTop: [*]Value = undefined,
+globals: Table,
 strings: Table,
 objects: ArrayList(*object.Obj),
 
@@ -35,6 +36,7 @@ pub fn init(allocator: Allocator, stdout: std.fs.File, stderr: std.fs.File) !VM 
         .out = stdout.writer().any(),
         .err = stderr.writer().any(),
         .objects = ArrayList(*object.Obj).init(allocator),
+        .globals = try Table.init(allocator),
         .strings = try Table.init(allocator),
         .allocator = allocator,
     };
@@ -44,6 +46,7 @@ pub fn init(allocator: Allocator, stdout: std.fs.File, stderr: std.fs.File) !VM 
 
 pub fn deinit(self: *VM) void {
     self.strings.deinit();
+    self.globals.deinit();
     for (self.objects.items) |obj| {
         obj.destroy();
     }
@@ -78,6 +81,29 @@ fn run(self: *VM) InterpretError!void {
             @intFromEnum(OpCode.nil) => self.push(.{ .nil = 0 }),
             @intFromEnum(OpCode.true_) => self.push(.{ .boolean = true }),
             @intFromEnum(OpCode.false_) => self.push(.{ .boolean = false }),
+            @intFromEnum(OpCode.pop) => _ = self.pop(),
+            @intFromEnum(OpCode.get_global) => {
+                const name = self.readConstant().obj;
+                if (self.globals.get(name)) |value| {
+                    self.push(value.value);
+                } else {
+                    try self.runtimeError("Undefined variable '{s}'", .{name.string.chars});
+                }
+            },
+            @intFromEnum(OpCode.define_global) => {
+                //std.debug.print("In define global\n", .{});
+                const name = self.readConstant().obj;
+                _ = self.globals.set(name, self.peek(0)) catch return InterpretError.InternalError;
+                _ = self.pop();
+            },
+            @intFromEnum(OpCode.set_global) => {
+                //std.debug.print("In set global\n", .{});
+                const name = self.readConstant().obj;
+                if (self.globals.set(name, self.peek(0)) catch return InterpretError.InternalError) {
+                    _ = self.globals.delete(name);
+                    try self.runtimeError("Undefined variable '{s}'.", .{name.string.chars});
+                }
+            },
             @intFromEnum(OpCode.equal) => {
                 const a = self.pop();
                 const b = self.pop();
@@ -101,13 +127,14 @@ fn run(self: *VM) InterpretError!void {
                     .number => self.push(.{ .number = -1 * self.pop().number }),
                     else => {
                         try self.runtimeError("Operand must be a number.", .{});
-                        return InterpretError.RuntimeError;
                     },
                 }
             },
-            @intFromEnum(OpCode.return_) => {
+            @intFromEnum(OpCode.print) => {
                 types.printValue(self.pop(), self.out) catch return InterpretError.InternalError;
                 self.out.print("\n", .{}) catch return InterpretError.InternalError;
+            },
+            @intFromEnum(OpCode.return_) => {
                 return;
             },
             else => return InterpretError.RuntimeError,
@@ -179,8 +206,9 @@ fn runtimeError(self: *VM, comptime format: []const u8, args: anytype) !void {
     self.err.print(format, args) catch return InterpretError.InternalError;
     self.err.print("\n", .{}) catch return InterpretError.InternalError;
 
-    const instruction: Instruction = (self.ip - self.chunk.code.items.len - 1)[0];
+    const instruction = if (self.ip[0].line < self.chunk.code.items.len - 1) self.ip[0] else (self.ip - @intFromPtr(self.chunk.code.items.ptr) - 1)[0];
     const line = instruction.line;
     self.err.print("[line {d}] in script\n", .{line}) catch return InterpretError.InternalError;
     self.resetStack();
+    return InterpretError.RuntimeError;
 }

@@ -26,29 +26,23 @@ pub fn repl(vm: *VM, out: io.AnyWriter, err_out: io.AnyWriter) void {
         };
     }
 }
-pub fn runFile(vm: *VM, allocator: Allocator, path: []const u8, err_out: io.AnyWriter) void {
-    const file = std.fs.openFileAbsolute(path, .{}) catch {
-        err_out.print("Could not open file \"{s}\".\n", .{path}) catch unreachable;
-        proc.exit(74);
+pub fn runFile(vm: *VM, allocator: Allocator, path: []const u8, err_out: io.AnyWriter) !void {
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        try err_out.print("Could not open file \"{s}\".\n", .{path});
+        return err;
     };
     defer file.close();
-    const meta = file.metadata() catch {
-        err_out.print("Could not determine file size\n", .{}) catch unreachable;
-        proc.exit(74);
+    const meta = file.metadata() catch |err| {
+        try err_out.print("Could not determine file size\n", .{});
+        return err;
     };
-    const source = file.readToEndAlloc(allocator, meta.size()) catch {
-        err_out.print("Not enough memory to read \"{s}\".\n", .{path}) catch unreachable;
-        proc.exit(74);
+    const source = file.readToEndAlloc(allocator, meta.size()) catch |err| {
+        try err_out.print("Not enough memory to read \"{s}\".\n", .{path});
+        return err;
     };
     defer allocator.free(source);
 
-    vm.interpret(source) catch |err| {
-        switch (err) {
-            VM.InterpretError.CompileError => proc.exit(65),
-            VM.InterpretError.RuntimeError => proc.exit(70),
-            VM.InterpretError.InternalError => proc.exit(74),
-        }
-    };
+    try vm.interpret(source);
 }
 
 pub fn main() !void {
@@ -70,7 +64,7 @@ pub fn main() !void {
     if (args.len == 1) {
         repl(&vm, stdout.writer().any(), stderr.writer().any());
     } else if (args.len == 2) {
-        runFile(&vm, alloc, args[1], stderr.writer().any());
+        try runFile(&vm, alloc, args[1], stderr.writer().any());
     } else {
         _ = try stderr.write("Usage: zlox [path]\n");
         proc.exit(64);

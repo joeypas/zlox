@@ -13,7 +13,7 @@ const VM = @import("vm.zig");
 
 const Compiler = @This();
 
-const Precedence = enum {
+const Precedence = enum(u8) {
     none,
     assignment,
     or_,
@@ -27,7 +27,7 @@ const Precedence = enum {
     primary,
 };
 
-const ParseFn = ?*const fn (*Compiler) InterpretError!void;
+const ParseFn = ?*const fn (*Compiler, bool) InterpretError!void;
 
 const ParseRule = struct {
     prefix: ParseFn,
@@ -63,7 +63,7 @@ const rules = [_]ParseRule{
     .{ .prefix = null, .infix = Compiler.binary, .precedence = .comparison }, // TOKEN_GREATER_EQUAL
     .{ .prefix = null, .infix = Compiler.binary, .precedence = .comparison }, // TOKEN_LESS
     .{ .prefix = null, .infix = Compiler.binary, .precedence = .comparison }, // TOKEN_LESS_EQUAL
-    .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_IDENTIFIER
+    .{ .prefix = Compiler.variable, .infix = null, .precedence = .none }, // TOKEN_IDENTIFIER
     .{ .prefix = Compiler.string, .infix = null, .precedence = .none }, // TOKEN_STRING
     .{ .prefix = Compiler.number, .infix = null, .precedence = .none }, // TOKEN_NUMBER
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_AND
@@ -107,9 +107,13 @@ pub fn compile(allocator: Allocator, vm: *VM, source: []const u8, chunk: *Chunk,
         .currentChunk = chunk,
     };
 
-    try compiler.advance();
-    try compiler.expression();
-    try compiler.consume(.eof, "Expect end of expression.");
+    compiler.advance();
+    //try compiler.expression();
+    //try compiler.consume(.eof, "Expect end of expression.");
+
+    while (!compiler.match(.eof)) {
+        try compiler.declaration();
+    }
     try compiler.end();
     if (compiler.parser.hadError) return InterpretError.CompileError;
 }
@@ -140,7 +144,27 @@ fn makeConstant(self: *Compiler, value: Value) !u8 {
     return @intCast(constant);
 }
 
-fn advance(self: *Compiler) InterpretError!void {
+fn printStatement(self: *Compiler) !void {
+    try self.expression();
+    try self.consume(.semicolon, "Expect ';' after value.");
+    try self.emitByte(@intFromEnum(OpCode.print));
+}
+
+fn synchronize(self: *Compiler) void {
+    self.parser.panicMode = false;
+
+    while (self.parser.current.type != .eof) {
+        if (self.parser.previous.type == .semicolon) return;
+        switch (self.parser.current.type) {
+            .class, .fun, .var_, .for_, .if_, .while_, .print, .return_ => return,
+            else => {},
+        }
+
+        self.advance();
+    }
+}
+
+fn advance(self: *Compiler) void {
     self.parser.previous = self.parser.current;
 
     while (true) {
@@ -148,7 +172,7 @@ fn advance(self: *Compiler) InterpretError!void {
 
         if (self.parser.current.type != .error_) break;
 
-        try self.errorAtCurrent(self.parser.current.start[0..self.parser.current.length]);
+        self.errorAtCurrent(self.parser.current.start[0..self.parser.current.length]) catch unreachable;
     }
 }
 
@@ -156,33 +180,94 @@ fn expression(self: *Compiler) !void {
     try self.parsePrecedence(.assignment);
 }
 
+fn expressionStatement(self: *Compiler) !void {
+    try self.expression();
+    try self.consume(.semicolon, "Expect ';' after expression.");
+    try self.emitByte(@intFromEnum(OpCode.pop));
+}
+
+fn varDeclaration(self: *Compiler) !void {
+    const global = try self.parseVariable("Expect variable name.");
+
+    if (self.match(.equal)) {
+        try self.expression();
+    } else {
+        try self.emitByte(@intFromEnum(OpCode.nil));
+    }
+
+    try self.consume(.semicolon, "Expect ';' after variable declaration.");
+
+    try self.defineVariable(global);
+}
+
+fn declaration(self: *Compiler) InterpretError!void {
+    if (self.match(.var_)) {
+        try self.varDeclaration();
+    } else {
+        try self.statement();
+    }
+
+    if (self.parser.panicMode) self.synchronize();
+}
+
+fn statement(self: *Compiler) !void {
+    if (self.match(.print)) {
+        try self.printStatement();
+    } else {
+        try self.expressionStatement();
+    }
+}
+
 fn parsePrecedence(self: *Compiler, prec: Precedence) !void {
-    try self.advance();
+    self.advance();
     const prefix_rule = getRule(self.parser.previous.type).prefix;
+    const canAssign = @intFromEnum(prec) <= @intFromEnum(Precedence.assignment);
 
     if (prefix_rule) |f| {
-        try f(self);
+        try f(self, canAssign);
     } else {
         try self.err("Expect expression.");
         return;
     }
 
     while (@intFromEnum(prec) <= @intFromEnum(getRule(self.parser.current.type).precedence)) {
-        try self.advance();
+        self.advance();
         const infix = getRule(self.parser.previous.type).infix;
         if (infix) |f| {
-            try f(self);
+            try f(self, canAssign);
+        }
+
+        if (canAssign and self.match(.equal)) {
+            try self.err("Invalid assignment target.");
         }
     }
 }
 
-fn number(self: *Compiler) !void {
+fn parseVariable(self: *Compiler, errorMessage: []const u8) !u8 {
+    try self.consume(.identifier, errorMessage);
+    return self.identifierConstant(&self.parser.previous);
+}
+
+fn defineVariable(self: *Compiler, global: u8) !void {
+    try self.emitBytes(@intFromEnum(OpCode.define_global), global);
+}
+
+fn identifierConstant(self: *Compiler, name: *Token) !u8 {
+    const constant = try self.makeConstant(.{ .obj = object.ObjString.copyString(
+        self.allocator,
+        name.start[0..name.length],
+        self.vm,
+    ) catch return InterpretError.InternalError });
+    return constant;
+}
+
+fn number(self: *Compiler, _: bool) !void {
     const value = std.fmt.parseFloat(f32, self.parser.previous.start[0..self.parser.previous.length]) catch return InterpretError.InternalError;
 
     try self.emitConstant(Value{ .number = value });
 }
 
-fn string(self: *Compiler) !void {
+fn string(self: *Compiler, _: bool) !void {
     try self.emitConstant(
         .{
             .obj = object.ObjString.copyString(
@@ -197,7 +282,22 @@ fn string(self: *Compiler) !void {
     );
 }
 
-fn unary(self: *Compiler) !void {
+fn variable(self: *Compiler, canAssign: bool) !void {
+    self.namedVariable(&self.parser.previous, canAssign) catch return InterpretError.CompileError;
+}
+
+fn namedVariable(self: *Compiler, name: *Token, canAssign: bool) !void {
+    const arg = try self.identifierConstant(name);
+
+    if (canAssign and self.match(.equal)) {
+        try self.expression();
+        try self.emitBytes(@intFromEnum(OpCode.set_global), arg);
+    } else {
+        try self.emitBytes(@intFromEnum(OpCode.get_global), arg);
+    }
+}
+
+fn unary(self: *Compiler, _: bool) !void {
     const operator_type = self.parser.previous.type;
 
     try self.parsePrecedence(.unary);
@@ -209,12 +309,12 @@ fn unary(self: *Compiler) !void {
     }
 }
 
-fn grouping(self: *Compiler) !void {
+fn grouping(self: *Compiler, _: bool) !void {
     try self.expression();
     try self.consume(.right_paren, "Expect ')' after expression.");
 }
 
-fn binary(self: *Compiler) !void {
+fn binary(self: *Compiler, _: bool) !void {
     const operator_type = self.parser.previous.type;
     const rule = getRule(operator_type);
     try self.parsePrecedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
@@ -234,7 +334,7 @@ fn binary(self: *Compiler) !void {
     }
 }
 
-fn literal(self: *Compiler) !void {
+fn literal(self: *Compiler, _: bool) !void {
     switch (self.parser.previous.type) {
         .false_ => try self.emitByte(@intFromEnum(OpCode.false_)),
         .nil => try self.emitByte(@intFromEnum(OpCode.nil)),
@@ -243,13 +343,23 @@ fn literal(self: *Compiler) !void {
     }
 }
 
-fn consume(self: *Compiler, ttype: TokenType, message: []const u8) !void {
-    if (self.parser.current.type == ttype) {
-        try self.advance();
+fn consume(self: *Compiler, comptime T: TokenType, message: []const u8) !void {
+    if (self.parser.current.type == T) {
+        self.advance();
         return;
     }
 
     try self.errorAtCurrent(message);
+}
+
+fn match(self: *Compiler, comptime T: TokenType) bool {
+    if (!self.check(T)) return false;
+    self.advance();
+    return true;
+}
+
+fn check(self: *Compiler, comptime T: TokenType) bool {
+    return self.parser.current.type == T;
 }
 
 fn errorAtCurrent(self: *Compiler, message: []const u8) !void {

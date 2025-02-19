@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const object = @import("object.zig");
 const ObjString = object.ObjString;
+const Obj = object.Obj;
 const Value = types.Value;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
@@ -11,7 +12,7 @@ const TABLE_MAX_LOAD = 0.75;
 pub const Table = @This();
 
 pub const Entry = struct {
-    key: ?*ObjString = null,
+    key: ?*Obj = null,
     value: Value = .{ .nil = 0 },
 };
 
@@ -35,8 +36,8 @@ pub fn deinit(self: *Table) void {
     self.entries.deinit();
 }
 
-pub fn findEntry(entries: *ArrayList(Entry), capacity: usize, key: *ObjString) *Entry {
-    var index: u32 = if (capacity == 0) 0 else @intCast(key.hash % capacity);
+pub fn findEntry(entries: *ArrayList(Entry), capacity: usize, key: *Obj) *Entry {
+    var index: usize = @intCast(key.string.hash % capacity);
     var tombstone: ?*Entry = null;
 
     while (true) {
@@ -47,22 +48,22 @@ pub fn findEntry(entries: *ArrayList(Entry), capacity: usize, key: *ObjString) *
             } else {
                 if (tombstone == null) tombstone = entry;
             }
-        } else if (entry.key == key) {
+        } else if (entry.key.? == key) {
             return entry;
         }
 
-        index = (index + 1) % @as(u32, @intCast(capacity));
+        index = (index + 1) % capacity;
     }
 }
 
-pub fn get(self: *Table, key: *ObjString) ?*Entry {
+pub fn get(self: *Table, key: *Obj) ?*Entry {
     if (self.count == 0) return null;
     const ret = findEntry(&self.entries, self.capacity, key);
     return if (ret.key == null) null else ret;
 }
 
-pub fn set(self: *Table, key: *ObjString, value: Value) !bool {
-    if (self.count + 1 > @as(usize, @intFromFloat(@ceil(@as(f32, @floatFromInt(self.capacity)) * TABLE_MAX_LOAD)))) {
+pub fn set(self: *Table, key: *Obj, value: Value) !bool {
+    if (self.count + 1 > @as(usize, @intFromFloat(@floor(@as(f32, @floatFromInt(self.capacity)) * TABLE_MAX_LOAD)))) {
         try self.growCapacity();
     }
     var entry = findEntry(&self.entries, self.capacity, key);
@@ -74,13 +75,13 @@ pub fn set(self: *Table, key: *ObjString, value: Value) !bool {
     return is_new_key;
 }
 
-pub fn delete(self: *Table, key: *ObjString) bool {
+pub fn delete(self: *Table, key: *Obj) bool {
     if (self.count == 0) return false;
 
-    const entry_maybe = self.get(key);
-    if (entry_maybe) |entry| {
-        entry.key = null;
-        entry.value = .{ .boolean = true };
+    var entry = self.get(key);
+    if (entry != null) {
+        entry.?.key = null;
+        entry.?.value = .{ .boolean = true };
         return true;
     }
     return false;
@@ -95,28 +96,28 @@ pub fn addAll(from: *Table, to: *Table) !void {
     }
 }
 
-pub fn findString(self: *Table, chars: []const u8, hash: u32) ?*ObjString {
+pub fn findString(self: *Table, chars: []const u8, hash: u32) ?*Obj {
     if (self.count == 0) return null;
 
-    var index = hash % self.capacity;
+    var index: usize = @intCast(hash % self.capacity);
     while (true) {
         const entry = &self.entries.items[index];
-        if (entry.key) |key| {
-            if (key.length == chars.len and key.hash == hash and std.mem.eql(u8, key.chars, chars)) {
-                return key;
-            }
-        } else {
+        if (entry.key == null) {
             if (Value.isNil(entry.value)) return null;
+        } else if (entry.key.?.string.length == chars.len and entry.key.?.string.hash == hash and std.mem.eql(u8, entry.key.?.string.chars, chars)) {
+            return entry.key.?;
         }
 
-        index = (index + 1) % @as(u32, @intCast(self.capacity));
+        if (index == 0) return null;
+        index = (index + 1) % self.capacity;
     }
 }
 
 fn growCapacity(self: *Table) !void {
-    var entries = try ArrayList(Entry).initCapacity(self.allocator, self.capacity * 2);
+    const new_cap = if (self.capacity < 8) 8 else self.capacity * 2;
+    var entries = try ArrayList(Entry).initCapacity(self.allocator, new_cap);
 
-    for (0..self.capacity * 2) |_| {
+    for (0..new_cap) |_| {
         entries.appendAssumeCapacity(.{});
     }
 
@@ -124,25 +125,23 @@ fn growCapacity(self: *Table) !void {
     for (0..self.capacity) |i| {
         const entry = &self.entries.items[i];
         if (entry.key) |key| {
-            var dest = findEntry(&entries, self.capacity * 2, key);
+            var dest = findEntry(&entries, new_cap, key);
             dest.key = key;
             dest.value = entry.value;
             self.count += 1;
-        } else {
-            continue;
         }
     }
 
     self.entries.deinit();
     self.entries = entries;
-    self.capacity = self.capacity * 2;
+    self.capacity = new_cap;
 }
 
 test "table" {
     const VM = @import("vm.zig");
     const alloc = std.testing.allocator;
 
-    var vm = VM.init(alloc, std.io.getStdOut(), std.io.getStdErr());
+    var vm = try VM.init(alloc, std.io.getStdOut(), std.io.getStdErr());
     defer vm.deinit();
 
     var table = try Table.init(alloc);
