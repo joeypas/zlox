@@ -32,17 +32,17 @@ pub fn runFile(vm: *VM, allocator: Allocator, path: []const u8, err_out: io.AnyW
         return err;
     };
     defer file.close();
-    const meta = file.metadata() catch |err| {
+    const meta = file.stat() catch |err| {
         try err_out.print("Could not determine file size\n", .{});
         return err;
     };
-    const source = file.readToEndAlloc(allocator, meta.size()) catch |err| {
+    const source = file.readToEndAlloc(allocator, meta.size) catch |err| {
         try err_out.print("Not enough memory to read \"{s}\".\n", .{path});
         return err;
     };
     defer allocator.free(source);
 
-    try vm.interpret(source);
+    try vm.interpret(source[0..]);
 }
 
 pub fn main() !void {

@@ -10,10 +10,12 @@ const Token = Scanner.Token;
 const TokenType = Scanner.TokenType;
 const object = @import("object.zig");
 const VM = @import("vm.zig");
+const build_options = @import("build_options");
+const debug = @import("debug.zig");
 
 const Compiler = @This();
 
-const Precedence = enum(u8) {
+const Precedence = enum(usize) {
     none,
     assignment,
     or_,
@@ -46,7 +48,7 @@ const Parser = struct {
 
 const Local = struct {
     name: Token,
-    depth: usize,
+    depth: ?usize,
 };
 
 const rules = [_]ParseRule{
@@ -104,15 +106,17 @@ scope_depth: usize = 0,
 parser: Parser,
 scanner: Scanner,
 stderr: std.io.AnyWriter,
+stdout: std.io.AnyWriter,
 current_chunk: *Chunk,
 vm: *VM,
 
-pub fn compile(allocator: Allocator, vm: *VM, source: []const u8, chunk: *Chunk, stderr: std.io.AnyWriter) InterpretError!void {
+pub fn compile(allocator: Allocator, vm: *VM, source: []const u8, chunk: *Chunk, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter) InterpretError!void {
     var compiler = Compiler{
         .vm = vm,
         .allocator = allocator,
         .scanner = Scanner.init(source),
         .stderr = stderr,
+        .stdout = stdout,
         .parser = .{},
         .current_chunk = chunk,
     };
@@ -130,14 +134,24 @@ pub fn compile(allocator: Allocator, vm: *VM, source: []const u8, chunk: *Chunk,
 
 fn end(self: *Compiler) !void {
     try self.emitByte(@intFromEnum(OpCode.return_));
+    if (build_options.dev) {
+        if (!self.parser.hadError)
+            debug.dissasembleChunk(self.current_chunk, "code", self.stdout) catch
+                return InterpretError.InternalError;
+    }
 }
 
 fn beginScope(self: *Compiler) void {
     self.scope_depth += 1;
 }
 
-fn endScope(self: *Compiler) void {
+fn endScope(self: *Compiler) !void {
     self.scope_depth -= 1;
+
+    while (self.local_count > 0 and self.locals[self.local_count - 1].depth.? > self.scope_depth) {
+        try self.emitByte(@intFromEnum(OpCode.pop));
+        self.local_count -= 1;
+    }
 }
 
 fn emitByte(self: *Compiler, byte: u8) !void {
@@ -155,7 +169,8 @@ fn emitConstant(self: *Compiler, value: Value) !void {
 
 fn makeConstant(self: *Compiler, value: Value) !u8 {
     const constant = self.current_chunk.addConstant(value) catch return InterpretError.InternalError;
-    if (constant > 255) {
+    //std.debug.print("{d}\n", .{constant});
+    if (constant > 256) {
         try self.err("Too many constants in one chunk.");
     }
 
@@ -220,6 +235,7 @@ fn varDeclaration(self: *Compiler) !void {
 
 fn declaration(self: *Compiler) InterpretError!void {
     if (self.match(.var_)) {
+        std.debug.print("{any}\n", .{self.parser.previous});
         try self.varDeclaration();
     } else {
         try self.statement();
@@ -234,7 +250,7 @@ fn statement(self: *Compiler) !void {
     } else if (self.match(.left_brace)) {
         self.beginScope();
         try self.block();
-        self.endScope();
+        try self.endScope();
     } else {
         try self.expressionStatement();
     }
@@ -253,19 +269,17 @@ fn parsePrecedence(self: *Compiler, prec: Precedence) !void {
     const prefix_rule = getRule(self.parser.previous.type).prefix;
     const canAssign = @intFromEnum(prec) <= @intFromEnum(Precedence.assignment);
 
-    if (prefix_rule) |f| {
-        try f(self, canAssign);
-    } else {
+    if (prefix_rule == null) {
         try self.err("Expect expression.");
         return;
+    } else {
+        try prefix_rule.?(self, canAssign);
     }
 
     while (@intFromEnum(prec) <= @intFromEnum(getRule(self.parser.current.type).precedence)) {
         self.advance();
         const infix = getRule(self.parser.previous.type).infix;
-        if (infix) |f| {
-            try f(self, canAssign);
-        }
+        try infix.?(self, canAssign);
 
         if (canAssign and self.match(.equal)) {
             try self.err("Invalid assignment target.");
@@ -282,39 +296,77 @@ fn parseVariable(self: *Compiler, errorMessage: []const u8) !u8 {
     return self.identifierConstant(&self.parser.previous);
 }
 
+fn markInitialized(self: *Compiler) void {
+    self.locals[self.local_count - 1].depth = self.scope_depth;
+}
+
 fn defineVariable(self: *Compiler, global: u8) !void {
     if (self.scope_depth > 0) {
+        self.markInitialized();
         return;
     }
 
     try self.emitBytes(@intFromEnum(OpCode.define_global), global);
 }
 
-fn identifierConstant(self: *Compiler, name: *Token) !u8 {
-    const constant = try self.makeConstant(.{ .obj = object.ObjString.copyString(
+fn identifierConstant(self: *Compiler, name: *const Token) !u8 {
+    const constant = try self.makeConstant(.{ .obj = .{ .string = object.ObjString.copyString(
         self.allocator,
         name.start[0..name.length],
         self.vm,
-    ) catch return InterpretError.InternalError });
+    ) catch return InterpretError.InternalError } });
     return constant;
 }
 
 fn addLocal(self: *Compiler, name: Token) !void {
-    defer self.local_count += 1;
-
     if (self.local_count == U8_COUNT) {
         try self.err("Too many local variables in function.");
     }
 
     var local = &self.locals[self.local_count];
+    self.local_count += 1;
     local.name = name;
-    local.depth = self.scope_depth;
+    local.depth = null;
 }
 
 fn declareVariable(self: *Compiler) !void {
     if (self.scope_depth == 0) return;
-    const name = &self.parser.previous;
-    try self.addLocal(name.*);
+    const name = self.parser.previous;
+
+    if (self.local_count != 0) {
+        var i = self.local_count - 1;
+        while (i >= 0) : (i -= 1) {
+            const local = &self.locals[i];
+            if (local.depth != null and local.depth.? < self.scope_depth) break;
+
+            if (identifiersEqual(&name, &local.name)) {
+                try self.err("Already a variable with this name in this scope.");
+            }
+        }
+    }
+
+    try self.addLocal(name);
+}
+
+fn identifiersEqual(a: *const Token, b: *const Token) bool {
+    if (a.length != b.length) return false;
+    return std.mem.eql(u8, a.start[0..a.length], b.start[0..a.length]);
+}
+
+fn resolveLocal(self: *Compiler, name: *const Token) !?u8 {
+    if (self.local_count == 0) return null;
+    var i: usize = self.local_count - 1;
+    while (i >= 0) : (i -= 1) {
+        const local = &self.locals[i];
+        if (identifiersEqual(name, &local.name)) {
+            if (local.depth == null) {
+                try self.err("Can't read local variable in its own initializer.");
+            }
+            return @intCast(i);
+        }
+    }
+
+    return null;
 }
 
 fn number(self: *Compiler, _: bool) !void {
@@ -326,30 +378,42 @@ fn number(self: *Compiler, _: bool) !void {
 fn string(self: *Compiler, _: bool) !void {
     try self.emitConstant(
         .{
-            .obj = object.ObjString.copyString(
+            .obj = .{ .string = object.ObjString.copyString(
                 self.allocator,
                 self.parser.previous.start[1 .. self.parser.previous.length - 1],
                 self.vm,
             ) catch |erro| {
                 std.debug.print("{any}", .{erro});
                 return InterpretError.InternalError;
-            },
+            } },
         },
     );
 }
 
 fn variable(self: *Compiler, canAssign: bool) !void {
-    self.namedVariable(&self.parser.previous, canAssign) catch return InterpretError.CompileError;
+    self.namedVariable(self.parser.previous, canAssign) catch return InterpretError.CompileError;
 }
 
-fn namedVariable(self: *Compiler, name: *Token, canAssign: bool) !void {
-    const arg = try self.identifierConstant(name);
+fn namedVariable(self: *Compiler, name: Token, canAssign: bool) !void {
+    var getOp: OpCode = undefined;
+    var setOp: OpCode = undefined;
+    var arg: ?u8 = try self.resolveLocal(&name);
+
+    if (arg) |a| {
+        arg = a;
+        getOp = OpCode.get_local;
+        setOp = OpCode.set_local;
+    } else {
+        arg = try self.identifierConstant(&name);
+        getOp = OpCode.get_global;
+        setOp = OpCode.set_global;
+    }
 
     if (canAssign and self.match(.equal)) {
         try self.expression();
-        try self.emitBytes(@intFromEnum(OpCode.set_global), arg);
+        try self.emitBytes(@intFromEnum(setOp), arg.?);
     } else {
-        try self.emitBytes(@intFromEnum(OpCode.get_global), arg);
+        try self.emitBytes(@intFromEnum(getOp), arg.?);
     }
 }
 

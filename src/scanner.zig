@@ -90,13 +90,11 @@ pub const SourceIterator = struct {
                     _ = self.advance();
                 },
                 '/' => {
-                    if (self.peekNext()) |next| {
-                        if (next == '/') {
-                            while (self.peek() != '\n' and !self.isAtEnd()) _ = self.advance();
-                        }
+                    if (self.peekNext().? == '/') {
+                        while (self.peek() != '\n' and !self.isAtEnd()) _ = self.advance();
+                    } else {
                         return;
                     }
-                    return;
                 },
                 else => return,
             }

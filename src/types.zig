@@ -9,6 +9,8 @@ pub const OpCode = enum(u8) {
     true_,
     false_,
     pop,
+    get_local,
+    set_local,
     get_global,
     define_global,
     set_global,
@@ -33,6 +35,7 @@ pub const Instruction = struct {
 pub const Chunk = struct {
     code: ArrayList(Instruction),
     constants: ArrayList(Value),
+    at: usize = 0,
 
     pub fn init(allocator: Allocator) Chunk {
         return .{
@@ -51,7 +54,7 @@ pub const Chunk = struct {
             if (self.code.capacity != 0) {
                 try self.code.ensureTotalCapacity(self.code.capacity * 2);
             } else {
-                try self.code.ensureTotalCapacity(self.code.capacity + 2);
+                try self.code.ensureTotalCapacity(8);
             }
         }
 
@@ -60,14 +63,15 @@ pub const Chunk = struct {
 
     fn writeValue(self: *Chunk, value: Value) !void {
         if (self.constants.capacity < self.constants.capacity + 1) {
-            if (self.constants.capacity != 0) try self.constants.ensureTotalCapacity(self.constants.capacity * 2) else try self.constants.ensureTotalCapacity(self.constants.capacity + 2);
+            if (self.constants.capacity != 0) try self.constants.ensureTotalCapacity(self.constants.capacity * 2) else try self.constants.ensureTotalCapacity(8);
         }
         self.constants.appendAssumeCapacity(value);
     }
 
     pub fn addConstant(self: *Chunk, value: Value) !usize {
         try self.writeValue(value);
-        return self.constants.items.len - 1;
+        self.at += 1;
+        return self.at - 1;
     }
 };
 
@@ -81,7 +85,7 @@ pub const ValueType = enum {
 pub const Value = union(ValueType) {
     boolean: bool,
     number: f32,
-    obj: *Object.Obj,
+    obj: Object.Obj,
     nil: u1,
 
     pub fn isNumber(value: Value) bool {
@@ -119,7 +123,7 @@ pub const Value = union(ValueType) {
             .boolean => a.boolean == b.boolean,
             .nil => false,
             .number => a.number == b.number,
-            .obj => @intFromPtr(a.obj) == @intFromPtr(b.obj),
+            .obj => Object.objEql(a, b),
         };
     }
 };

@@ -26,13 +26,41 @@ fn dissasembleInstruction(chunk: *Chunk, offset: usize, out: Writer) !usize {
 
     const instruction = chunk.code.items[offset].byte;
     switch (instruction) {
-        @intFromEnum(OpCode.constant) => return constantInstruction("OP_CONSTANT", chunk, offset, out),
+        @intFromEnum(OpCode.constant) => return constantInstruction(
+            "OP_CONSTANT",
+            chunk,
+            offset,
+            out,
+        ),
         @intFromEnum(OpCode.nil) => return simpleInstruction("OP_NIL", offset, out),
         @intFromEnum(OpCode.true_) => return simpleInstruction("OP_TRUE", offset, out),
         @intFromEnum(OpCode.false_) => return simpleInstruction("OP_FALSE", offset, out),
         @intFromEnum(OpCode.pop) => return simpleInstruction("OP_POP", offset, out),
-        @intFromEnum(OpCode.define_global) => return simpleInstruction("OP_DEFINE_GLOBAL", offset, out),
-        @intFromEnum(OpCode.define_global) => return constantInstruction("OP_SET_GLOBAL", chunk, offset, out),
+        @intFromEnum(OpCode.get_local) => return byteInstruction(
+            "OP_GET_LOCAL",
+            chunk,
+            offset,
+            out,
+        ),
+        @intFromEnum(OpCode.set_local) => return byteInstruction(
+            "OP_SET_LOCAL",
+            chunk,
+            offset,
+            out,
+        ),
+        @intFromEnum(OpCode.get_global) => return constantInstruction(
+            "OP_GET_GLOBAL",
+            chunk,
+            offset,
+            out,
+        ),
+        @intFromEnum(OpCode.define_global) => return constantInstruction("OP_DEFINE_GLOBAL", chunk, offset, out),
+        @intFromEnum(OpCode.set_global) => return constantInstruction(
+            "OP_SET_GLOBAL",
+            chunk,
+            offset,
+            out,
+        ),
         @intFromEnum(OpCode.equal) => return simpleInstruction("OP_EQUAL", offset, out),
         @intFromEnum(OpCode.greater) => return simpleInstruction("OP_GREATER", offset, out),
         @intFromEnum(OpCode.less) => return simpleInstruction("OP_LESS", offset, out),
@@ -54,6 +82,12 @@ fn dissasembleInstruction(chunk: *Chunk, offset: usize, out: Writer) !usize {
 fn simpleInstruction(name: []const u8, offset: usize, out: Writer) !usize {
     try out.print("{s}\n", .{name});
     return offset + 1;
+}
+
+fn byteInstruction(name: []const u8, chunk: *Chunk, offset: usize, out: Writer) !usize {
+    const slot = chunk.code.items[offset + 1].byte;
+    try out.print("{s:<16} {d:0>4}\n", .{ name, slot });
+    return offset + 2;
 }
 
 fn constantInstruction(name: []const u8, chunk: *Chunk, offset: usize, out: Writer) !usize {

@@ -12,7 +12,7 @@ const TABLE_MAX_LOAD = 0.75;
 pub const Table = @This();
 
 pub const Entry = struct {
-    key: ?*Obj = null,
+    key: ?Obj = null,
     value: Value = .{ .nil = 0 },
 };
 
@@ -36,7 +36,7 @@ pub fn deinit(self: *Table) void {
     self.entries.deinit();
 }
 
-pub fn findEntry(entries: *ArrayList(Entry), capacity: usize, key: *Obj) *Entry {
+pub fn findEntry(entries: *ArrayList(Entry), capacity: usize, key: Obj) *Entry {
     var index: usize = @intCast(key.string.hash % capacity);
     var tombstone: ?*Entry = null;
 
@@ -48,7 +48,7 @@ pub fn findEntry(entries: *ArrayList(Entry), capacity: usize, key: *Obj) *Entry 
             } else {
                 if (tombstone == null) tombstone = entry;
             }
-        } else if (entry.key.? == key) {
+        } else if (entry.key.?.string == key.string) {
             return entry;
         }
 
@@ -56,13 +56,13 @@ pub fn findEntry(entries: *ArrayList(Entry), capacity: usize, key: *Obj) *Entry 
     }
 }
 
-pub fn get(self: *Table, key: *Obj) ?*Entry {
+pub fn get(self: *Table, key: Obj) ?*Entry {
     if (self.count == 0) return null;
     const ret = findEntry(&self.entries, self.capacity, key);
     return if (ret.key == null) null else ret;
 }
 
-pub fn set(self: *Table, key: *Obj, value: Value) !bool {
+pub fn set(self: *Table, key: Obj, value: Value) !bool {
     if (self.count + 1 > @as(usize, @intFromFloat(@floor(@as(f32, @floatFromInt(self.capacity)) * TABLE_MAX_LOAD)))) {
         try self.growCapacity();
     }
@@ -75,7 +75,7 @@ pub fn set(self: *Table, key: *Obj, value: Value) !bool {
     return is_new_key;
 }
 
-pub fn delete(self: *Table, key: *Obj) bool {
+pub fn delete(self: *Table, key: Obj) bool {
     if (self.count == 0) return false;
 
     var entry = self.get(key);
@@ -96,7 +96,7 @@ pub fn addAll(from: *Table, to: *Table) !void {
     }
 }
 
-pub fn findString(self: *Table, chars: []const u8, hash: u32) ?*Obj {
+pub fn findString(self: *Table, chars: []const u8, hash: u32) ?Obj {
     if (self.count == 0) return null;
 
     var index: usize = @intCast(hash % self.capacity);
@@ -108,7 +108,7 @@ pub fn findString(self: *Table, chars: []const u8, hash: u32) ?*Obj {
             return entry.key.?;
         }
 
-        if (index == 0) return null;
+        //if (index == 0) return null;
         index = (index + 1) % self.capacity;
     }
 }
