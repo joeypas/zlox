@@ -57,7 +57,7 @@ pub fn interpret(self: *VM, source: []const u8) InterpretError!void {
     var chunk = Chunk.init(self.allocator);
     defer chunk.deinit();
 
-    compiler.compile(self.allocator, self, source, &chunk, self.err) catch |err| {
+    compiler.compile(self.allocator, self, source, &chunk, self.out, self.err) catch |err| {
         return switch (err) {
             InterpretError.InternalError => InterpretError.InternalError,
             else => InterpretError.CompileError,
@@ -82,6 +82,14 @@ fn run(self: *VM) InterpretError!void {
             @intFromEnum(OpCode.true_) => self.push(.{ .boolean = true }),
             @intFromEnum(OpCode.false_) => self.push(.{ .boolean = false }),
             @intFromEnum(OpCode.pop) => _ = self.pop(),
+            @intFromEnum(OpCode.get_local) => {
+                const slot = self.readByte().byte;
+                self.push(self.stack[slot]);
+            },
+            @intFromEnum(OpCode.set_local) => {
+                const slot = self.readByte().byte;
+                self.stack[slot] = self.peek(0);
+            },
             @intFromEnum(OpCode.get_global) => {
                 const name = self.readConstant().obj;
                 if (self.globals.get(name)) |value| {

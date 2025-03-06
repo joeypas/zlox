@@ -7,12 +7,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const dev = b.option(bool, "dev", "Enable dissasembler") orelse false;
+
     const exe = b.addExecutable(.{
         .name = "zlox",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    const exe_options = b.addOptions();
+    exe.root_module.addOptions("build_options", exe_options);
+
+    exe_options.addOption(bool, "dev", dev);
 
     b.installArtifact(exe);
 
