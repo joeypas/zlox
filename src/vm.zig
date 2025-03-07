@@ -189,7 +189,7 @@ fn concatenate(self: *VM) !void {
     var chars = self.allocator.alloc(u8, len) catch return InterpretError.InternalError;
     @memcpy(chars[0..b.length], b.chars);
     @memcpy(chars[b.length..], a.chars);
-    self.push(.{ .obj = object.ObjString.takeString(self.allocator, chars, self) catch return InterpretError.InternalError });
+    self.push(.{ .obj = .{ .string = object.ObjString.takeString(self.allocator, chars, self) catch return InterpretError.InternalError } });
 }
 
 fn binaryOp(self: *VM, comptime code: OpCode) !void {

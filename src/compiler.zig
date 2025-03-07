@@ -302,8 +302,13 @@ fn parseVariable(self: *Compiler, errorMessage: []const u8) !u8 {
     return self.identifierConstant(&self.parser.previous);
 }
 
+fn markInitialized(self: *Compiler) void {
+    self.locals[@intCast(self.localCount - 1)].depth = self.scopeDepth;
+}
+
 fn defineVariable(self: *Compiler, global: u8) !void {
     if (self.scopeDepth > 0) {
+        self.markInitialized();
         return;
     }
 
@@ -311,11 +316,11 @@ fn defineVariable(self: *Compiler, global: u8) !void {
 }
 
 fn identifierConstant(self: *Compiler, name: *Token) !u8 {
-    const constant = try self.makeConstant(.{ .obj = object.ObjString.copyString(
+    const constant = try self.makeConstant(.{ .obj = .{ .string = object.ObjString.copyString(
         self.allocator,
         name.start[0..name.length],
         self.vm,
-    ) catch return InterpretError.InternalError });
+    ) catch return InterpretError.InternalError } });
     return constant;
 }
 
@@ -328,7 +333,10 @@ fn resolveLocal(self: *Compiler, name: *Token) !isize {
     var i = self.localCount - 1;
     while (i >= 0) : (i -= 1) {
         const local = &self.locals[@intCast(i)];
-        if (identifiersEqual(name, &local.name)) return i;
+        if (identifiersEqual(name, &local.name)) {
+            if (local.depth == -1) try self.err("Can't read local variable in its own initializer.");
+            return i;
+        }
     }
 
     return -1;
@@ -342,7 +350,7 @@ fn addLocal(self: *Compiler, name: Token) !void {
     var local = &self.locals[@intCast(self.localCount)];
     self.localCount += 1;
     local.name = name;
-    local.depth = self.scopeDepth;
+    local.depth = -1;
 }
 
 fn declareVariable(self: *Compiler) !void {
@@ -373,8 +381,8 @@ fn number(self: *Compiler, _: bool) !void {
 
 fn string(self: *Compiler, _: bool) !void {
     try self.emitConstant(
-        .{
-            .obj = object.ObjString.copyString(
+        .{ .obj = .{
+            .string = object.ObjString.copyString(
                 self.allocator,
                 self.parser.previous.start[1 .. self.parser.previous.length - 1],
                 self.vm,
@@ -382,7 +390,7 @@ fn string(self: *Compiler, _: bool) !void {
                 std.debug.print("{any}", .{erro});
                 return InterpretError.InternalError;
             },
-        },
+        } },
     );
 }
 
