@@ -302,13 +302,14 @@ fn parseVariable(self: *Compiler, errorMessage: []const u8) !u8 {
     return self.identifierConstant(&self.parser.previous);
 }
 
-fn markInitialized(self: *Compiler) void {
+fn markInitialized(self: *Compiler) !void {
     self.locals[@intCast(self.localCount - 1)].depth = self.scopeDepth;
+    try self.emitBytes(@intFromEnum(OpCode.set_local), @intCast(self.localCount - 1));
 }
 
 fn defineVariable(self: *Compiler, global: u8) !void {
     if (self.scopeDepth > 0) {
-        self.markInitialized();
+        try self.markInitialized();
         return;
     }
 
