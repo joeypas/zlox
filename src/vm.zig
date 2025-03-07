@@ -84,7 +84,6 @@ fn run(self: *VM) InterpretError!void {
             @intFromEnum(OpCode.pop) => _ = self.pop(),
             @intFromEnum(OpCode.get_local) => {
                 const slot = self.readByte().byte;
-                std.debug.print("{any}\n", .{self.stack[slot]});
                 self.push(self.stack[slot]);
             },
             @intFromEnum(OpCode.set_local) => {
@@ -190,7 +189,7 @@ fn concatenate(self: *VM) !void {
     var chars = self.allocator.alloc(u8, len) catch return InterpretError.InternalError;
     @memcpy(chars[0..b.length], b.chars);
     @memcpy(chars[b.length..], a.chars);
-    self.push(.{ .obj = .{ .string = object.ObjString.takeString(self.allocator, chars, self) catch return InterpretError.InternalError } });
+    self.push(.{ .obj = object.ObjString.takeString(self.allocator, chars, self) catch return InterpretError.InternalError });
 }
 
 fn binaryOp(self: *VM, comptime code: OpCode) !void {
