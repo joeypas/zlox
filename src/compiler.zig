@@ -16,7 +16,8 @@ const errlog = std.log.scoped(.compiler).err;
 
 const Compiler = @This();
 
-const UINT8_COUNT = std.math.maxInt(u8);
+const UINT8_MAX = std.math.maxInt(u8);
+const UINT16_MAX = std.math.maxInt(u16);
 
 const Precedence = enum(u8) {
     none,
@@ -76,7 +77,7 @@ const rules = [_]ParseRule{
     .{ .prefix = Compiler.variable, .infix = null, .precedence = .none }, // TOKEN_IDENTIFIER
     .{ .prefix = Compiler.string, .infix = null, .precedence = .none }, // TOKEN_STRING
     .{ .prefix = Compiler.number, .infix = null, .precedence = .none }, // TOKEN_NUMBER
-    .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_AND
+    .{ .prefix = null, .infix = Compiler.and_, .precedence = .and_ }, // TOKEN_AND
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_CLASS
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_ELSE
     .{ .prefix = Compiler.literal, .infix = null, .precedence = .none }, // TOKEN_FALSE
@@ -84,7 +85,7 @@ const rules = [_]ParseRule{
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_FUN
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_IF
     .{ .prefix = Compiler.literal, .infix = null, .precedence = .none }, // TOKEN_NIL
-    .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_OR
+    .{ .prefix = null, .infix = Compiler.or_, .precedence = .or_ }, // TOKEN_OR
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_PRINT
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_RETURN
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_SUPER
@@ -107,7 +108,7 @@ stderr: std.io.AnyWriter,
 stdout: std.io.AnyWriter,
 currentChunk: *Chunk,
 vm: *VM,
-locals: [UINT8_COUNT]Local = undefined,
+locals: [UINT8_MAX]Local = undefined,
 localCount: isize = 0,
 scopeDepth: isize = 0,
 
@@ -166,7 +167,7 @@ fn endScope(self: *Compiler) !void {
 
 fn emitByte(self: *Compiler, byte: u8) !void {
     self.currentChunk.writeChunk(byte, self.parser.previous.line) catch |erro| {
-        errlog("Error: {any} in emitByte.\nCurrent byte: {d}\n", .{ erro, byte });
+        errlog("Error: {any} in emitByte.\nCurrent byte: {c}\n", .{ erro, byte });
         return InterpretError.InternalError;
     };
 }
@@ -176,8 +177,34 @@ fn emitBytes(self: *Compiler, byte1: u8, byte2: u8) !void {
     try self.emitByte(byte2);
 }
 
+fn emitLoop(self: *Compiler, loop_start: usize) !void {
+    try self.emitByte(@intFromEnum(OpCode.loop));
+
+    const offset = self.currentChunk.code.items.len - loop_start + 2;
+    if (offset > UINT16_MAX) try self.err("Loop body too large.");
+
+    try self.emitByte(@intCast(offset >> 8 & 0xff));
+    try self.emitByte(@intCast(offset & 0xff));
+}
+
+fn emitJump(self: *Compiler, instruction: u8) !usize {
+    try self.emitByte(instruction);
+    try self.emitByte(0xff);
+    try self.emitByte(0xff);
+    return self.currentChunk.code.items.len - 2;
+}
+
 fn emitConstant(self: *Compiler, value: Value) !void {
     try self.emitBytes(@intFromEnum(OpCode.constant), try self.makeConstant(value));
+}
+
+fn patchJump(self: *Compiler, offset: usize) !void {
+    const jump = self.currentChunk.code.items.len - offset - 2;
+
+    if (jump > UINT16_MAX) try self.err("Too much code to jump over.");
+
+    self.currentChunk.code.items[offset].byte = @intCast((jump >> 8) & 0xff);
+    self.currentChunk.code.items[offset + 1].byte = @intCast(jump & 0xff);
 }
 
 fn makeConstant(self: *Compiler, value: Value) !u8 {
@@ -196,6 +223,65 @@ fn printStatement(self: *Compiler) !void {
     try self.expression();
     try self.consume(.semicolon, "Expect ';' after value.");
     try self.emitByte(@intFromEnum(OpCode.print));
+}
+
+fn forStatement(self: *Compiler) InterpretError!void {
+    self.beginScope();
+    try self.consume(.left_paren, "Expect '(' after 'for'.");
+    if (self.match(.semicolon)) {
+        // No init.
+    } else if (self.match(.var_)) {
+        try self.varDeclaration();
+    } else {
+        try self.expressionStatement();
+    }
+
+    var loop_start = self.currentChunk.code.items.len;
+    var exit_jump: ?usize = null;
+    if (!self.match(.semicolon)) {
+        try self.expression();
+        try self.consume(.semicolon, "Expect ';' after loop condition.");
+
+        exit_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+        try self.emitByte(@intFromEnum(OpCode.pop));
+    }
+
+    if (!self.match(.right_paren)) {
+        const body_jump = try self.emitJump(@intFromEnum(OpCode.jump));
+        const increment_start = self.currentChunk.code.items.len;
+        try self.expression();
+        try self.emitByte(@intFromEnum(OpCode.pop));
+        try self.consume(.right_paren, "Expect ')' after for clauses.");
+
+        try self.emitLoop(loop_start);
+        loop_start = increment_start;
+        try self.patchJump(body_jump);
+    }
+
+    try self.statement();
+    try self.emitLoop(loop_start);
+
+    if (exit_jump) |exit| {
+        try self.patchJump(exit);
+        try self.emitByte(@intFromEnum(OpCode.pop));
+    }
+
+    try self.endScope();
+}
+
+fn whileStatement(self: *Compiler) InterpretError!void {
+    const loop_start = self.currentChunk.code.items.len;
+    try self.consume(.left_paren, "Expect '(' after 'while'.");
+    try self.expression();
+    try self.consume(.right_paren, "Expect ')' after condition.");
+
+    const exit_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+    try self.emitByte(@intFromEnum(OpCode.pop));
+    try self.statement();
+    try self.emitLoop(loop_start);
+
+    try self.patchJump(exit_jump);
+    try self.emitByte(@intFromEnum(OpCode.pop));
 }
 
 fn synchronize(self: *Compiler) void {
@@ -242,6 +328,24 @@ fn expressionStatement(self: *Compiler) !void {
     try self.emitByte(@intFromEnum(OpCode.pop));
 }
 
+fn ifStatement(self: *Compiler) InterpretError!void {
+    try self.consume(.left_paren, "Expect '(' after 'if'.");
+    try self.expression();
+    try self.consume(.right_paren, "Expect ')' after confition.");
+
+    const then_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+    try self.emitByte(@intFromEnum(OpCode.pop));
+    try self.statement();
+
+    const else_jump = try self.emitJump(@intFromEnum(OpCode.jump));
+
+    try self.patchJump(then_jump);
+    try self.emitByte(@intFromEnum(OpCode.pop));
+
+    if (self.match(.else_)) try self.statement();
+    try self.patchJump(else_jump);
+}
+
 fn varDeclaration(self: *Compiler) !void {
     const global = try self.parseVariable("Expect variable name.");
 
@@ -269,6 +373,12 @@ fn declaration(self: *Compiler) InterpretError!void {
 fn statement(self: *Compiler) !void {
     if (self.match(.print)) {
         try self.printStatement();
+    } else if (self.match(.for_)) {
+        try self.forStatement();
+    } else if (self.match(.if_)) {
+        try self.ifStatement();
+    } else if (self.match(.while_)) {
+        try self.whileStatement();
     } else if (self.match(.left_brace)) {
         self.beginScope();
         try self.block();
@@ -357,7 +467,7 @@ fn resolveLocal(self: *Compiler, name: *Token) !isize {
 }
 
 fn addLocal(self: *Compiler, name: Token) !void {
-    if (self.localCount == UINT8_COUNT) {
+    if (self.localCount == UINT8_MAX) {
         return self.err("Too many local variables in function.");
     }
 
@@ -385,6 +495,26 @@ fn declareVariable(self: *Compiler) !void {
     }
 
     try self.addLocal(name.*);
+}
+
+fn and_(self: *Compiler, _: bool) !void {
+    const end_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+
+    try self.emitByte(@intFromEnum(OpCode.pop));
+    try self.parsePrecedence(.and_);
+
+    try self.patchJump(end_jump);
+}
+
+fn or_(self: *Compiler, _: bool) !void {
+    const else_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+    const end_jump = try self.emitJump(@intFromEnum(OpCode.jump));
+
+    try self.patchJump(else_jump);
+    try self.emitByte(@intFromEnum(OpCode.pop));
+
+    try self.parsePrecedence(.or_);
+    try self.patchJump(end_jump);
 }
 
 fn number(self: *Compiler, _: bool) !void {
