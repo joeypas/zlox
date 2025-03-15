@@ -76,7 +76,7 @@ const rules = [_]ParseRule{
     .{ .prefix = Compiler.variable, .infix = null, .precedence = .none }, // TOKEN_IDENTIFIER
     .{ .prefix = Compiler.string, .infix = null, .precedence = .none }, // TOKEN_STRING
     .{ .prefix = Compiler.number, .infix = null, .precedence = .none }, // TOKEN_NUMBER
-    .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_AND
+    .{ .prefix = null, .infix = Compiler.and_, .precedence = .and_ }, // TOKEN_AND
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_CLASS
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_ELSE
     .{ .prefix = Compiler.literal, .infix = null, .precedence = .none }, // TOKEN_FALSE
@@ -84,7 +84,7 @@ const rules = [_]ParseRule{
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_FUN
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_IF
     .{ .prefix = Compiler.literal, .infix = null, .precedence = .none }, // TOKEN_NIL
-    .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_OR
+    .{ .prefix = null, .infix = Compiler.or_, .precedence = .or_ }, // TOKEN_OR
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_PRINT
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_RETURN
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_SUPER
@@ -421,6 +421,26 @@ fn declareVariable(self: *Compiler) !void {
     }
 
     try self.addLocal(name.*);
+}
+
+fn and_(self: *Compiler, _: bool) !void {
+    const end_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+
+    try self.emitByte(@intFromEnum(OpCode.pop));
+    try self.parsePrecedence(.and_);
+
+    try self.patchJump(end_jump);
+}
+
+fn or_(self: *Compiler, _: bool) !void {
+    const else_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+    const end_jump = try self.emitJump(@intFromEnum(OpCode.jump));
+
+    try self.patchJump(else_jump);
+    try self.emitByte(@intFromEnum(OpCode.pop));
+
+    try self.parsePrecedence(.or_);
+    try self.patchJump(end_jump);
 }
 
 fn number(self: *Compiler, _: bool) !void {
