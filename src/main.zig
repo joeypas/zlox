@@ -58,7 +58,7 @@ pub fn main() !void {
     var stderr = io.getStdErr();
     defer stderr.close();
 
-    var vm = try VM.init(alloc, stdout, stderr);
+    var vm = try VM.init(alloc, stdout.writer().any(), stderr.writer().any());
     defer vm.deinit();
 
     if (args.len == 1) {
