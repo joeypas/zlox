@@ -46,6 +46,8 @@ fn dissasembleInstruction(chunk: *Chunk, offset: usize, out: Writer) !usize {
         @intFromEnum(OpCode.not) => return simpleInstruction("OP_NOT", offset, out),
         @intFromEnum(OpCode.negate) => return simpleInstruction("OP_NEGATE", offset, out),
         @intFromEnum(OpCode.print) => return simpleInstruction("OP_PRINT", offset, out),
+        @intFromEnum(OpCode.jump) => return jumpInstruction("OP_JUMP", 1, chunk, offset, out),
+        @intFromEnum(OpCode.jump_if_false) => return jumpInstruction("OP_JUMP_IF_FALSE", 1, chunk, offset, out),
         @intFromEnum(OpCode.return_) => return simpleInstruction("OP_RETURN", offset, out),
         else => {
             try out.print("Unknown opcode {any}\n", .{instruction});
@@ -71,4 +73,12 @@ fn byteInstruction(name: []const u8, chunk: *Chunk, offset: usize, out: Writer) 
     const slot = chunk.code.items[offset + 1].byte;
     try out.print("{s:<16} {d:0>4}\n", .{ name, slot });
     return offset + 2;
+}
+
+fn jumpInstruction(name: []const u8, sign: isize, chunk: *Chunk, offset: usize, out: Writer) !usize {
+    var jump: u16 = @as(u16, @intCast(chunk.code.items[offset + 1].byte)) << 8;
+    jump |= chunk.code.items[offset + 2].byte;
+
+    try out.print("{s:<16} {d:0>4} -> {d}\n", .{ name, offset, @as(isize, @intCast(offset + 3)) + sign * @as(isize, @intCast(jump)) });
+    return offset + 3;
 }

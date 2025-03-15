@@ -166,7 +166,7 @@ fn endScope(self: *Compiler) !void {
 
 fn emitByte(self: *Compiler, byte: u8) !void {
     self.currentChunk.writeChunk(byte, self.parser.previous.line) catch |erro| {
-        errlog("Error: {any} in emitByte.\nCurrent byte: {d}\n", .{ erro, byte });
+        errlog("Error: {any} in emitByte.\nCurrent byte: {c}\n", .{ erro, byte });
         return InterpretError.InternalError;
     };
 }
@@ -176,8 +176,24 @@ fn emitBytes(self: *Compiler, byte1: u8, byte2: u8) !void {
     try self.emitByte(byte2);
 }
 
+fn emitJump(self: *Compiler, instruction: u8) !usize {
+    try self.emitByte(instruction);
+    try self.emitByte(0xff);
+    try self.emitByte(0xff);
+    return self.currentChunk.code.items.len - 2;
+}
+
 fn emitConstant(self: *Compiler, value: Value) !void {
     try self.emitBytes(@intFromEnum(OpCode.constant), try self.makeConstant(value));
+}
+
+fn patchJump(self: *Compiler, offset: usize) !void {
+    const jump = self.currentChunk.code.items.len - offset - 2;
+
+    if (jump > std.math.maxInt(u16)) try self.err("Too much code to jump over.");
+
+    self.currentChunk.code.items[offset].byte = @intCast((jump >> 8) & 0xff);
+    self.currentChunk.code.items[offset + 1].byte = @intCast(jump & 0xff);
 }
 
 fn makeConstant(self: *Compiler, value: Value) !u8 {
@@ -242,6 +258,24 @@ fn expressionStatement(self: *Compiler) !void {
     try self.emitByte(@intFromEnum(OpCode.pop));
 }
 
+fn ifStatement(self: *Compiler) InterpretError!void {
+    try self.consume(.left_paren, "Expect '(' after 'if'.");
+    try self.expression();
+    try self.consume(.right_paren, "Expect ')' after confition.");
+
+    const then_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+    try self.emitByte(@intFromEnum(OpCode.pop));
+    try self.statement();
+
+    const else_jump = try self.emitJump(@intFromEnum(OpCode.jump));
+
+    try self.patchJump(then_jump);
+    try self.emitByte(@intFromEnum(OpCode.pop));
+
+    if (self.match(.else_)) try self.statement();
+    try self.patchJump(else_jump);
+}
+
 fn varDeclaration(self: *Compiler) !void {
     const global = try self.parseVariable("Expect variable name.");
 
@@ -269,6 +303,8 @@ fn declaration(self: *Compiler) InterpretError!void {
 fn statement(self: *Compiler) !void {
     if (self.match(.print)) {
         try self.printStatement();
+    } else if (self.match(.if_)) {
+        try self.ifStatement();
     } else if (self.match(.left_brace)) {
         self.beginScope();
         try self.block();

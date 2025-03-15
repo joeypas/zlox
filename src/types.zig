@@ -24,6 +24,8 @@ pub const OpCode = enum(u8) {
     not,
     negate,
     print,
+    jump,
+    jump_if_false,
     return_,
 };
 
@@ -50,22 +52,11 @@ pub const Chunk = struct {
     }
 
     pub fn writeChunk(self: *Chunk, byte: u8, line: usize) !void {
-        if (self.code.capacity < self.code.capacity + 1) {
-            if (self.code.capacity != 0) {
-                try self.code.ensureTotalCapacity(self.code.capacity * 2);
-            } else {
-                try self.code.ensureTotalCapacity(8);
-            }
-        }
-
-        self.code.appendAssumeCapacity(.{ .byte = byte, .line = line });
+        try self.code.append(.{ .byte = byte, .line = line });
     }
 
     fn writeValue(self: *Chunk, value: Value) !void {
-        if (self.constants.capacity < self.constants.capacity + 1) {
-            if (self.constants.capacity != 0) try self.constants.ensureTotalCapacity(self.constants.capacity * 2) else try self.constants.ensureTotalCapacity(8);
-        }
-        self.constants.appendAssumeCapacity(value);
+        try self.constants.append(value);
     }
 
     pub fn addConstant(self: *Chunk, value: Value) !usize {

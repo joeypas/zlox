@@ -157,6 +157,14 @@ fn run(self: *VM) InterpretError!void {
             @intFromEnum(OpCode.return_) => {
                 return;
             },
+            @intFromEnum(OpCode.jump) => {
+                const offset = self.readShort();
+                self.ip += @intCast(offset);
+            },
+            @intFromEnum(OpCode.jump_if_false) => {
+                const offset = self.readShort();
+                if (isFalsey(self.peek(0))) self.ip += offset;
+            },
             else => return InterpretError.RuntimeError,
         }
     }
@@ -165,6 +173,11 @@ fn run(self: *VM) InterpretError!void {
 fn readByte(self: *VM) Instruction {
     defer self.ip += 1;
     return self.ip[0];
+}
+
+fn readShort(self: *VM) u16 {
+    defer self.ip += 2;
+    return @intCast(@as(u16, @intCast(self.ip[0].byte)) << 8 | self.ip[1].byte);
 }
 
 fn readConstant(self: *VM) types.Value {
