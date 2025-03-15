@@ -48,6 +48,7 @@ fn dissasembleInstruction(chunk: *Chunk, offset: usize, out: Writer) !usize {
         @intFromEnum(OpCode.print) => return simpleInstruction("OP_PRINT", offset, out),
         @intFromEnum(OpCode.jump) => return jumpInstruction("OP_JUMP", 1, chunk, offset, out),
         @intFromEnum(OpCode.jump_if_false) => return jumpInstruction("OP_JUMP_IF_FALSE", 1, chunk, offset, out),
+        @intFromEnum(OpCode.loop) => return jumpInstruction("OP_LOOP", -1, chunk, offset, out),
         @intFromEnum(OpCode.return_) => return simpleInstruction("OP_RETURN", offset, out),
         else => {
             try out.print("Unknown opcode {any}\n", .{instruction});

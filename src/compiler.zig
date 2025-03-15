@@ -16,7 +16,8 @@ const errlog = std.log.scoped(.compiler).err;
 
 const Compiler = @This();
 
-const UINT8_COUNT = std.math.maxInt(u8);
+const UINT8_MAX = std.math.maxInt(u8);
+const UINT16_MAX = std.math.maxInt(u16);
 
 const Precedence = enum(u8) {
     none,
@@ -107,7 +108,7 @@ stderr: std.io.AnyWriter,
 stdout: std.io.AnyWriter,
 currentChunk: *Chunk,
 vm: *VM,
-locals: [UINT8_COUNT]Local = undefined,
+locals: [UINT8_MAX]Local = undefined,
 localCount: isize = 0,
 scopeDepth: isize = 0,
 
@@ -176,6 +177,16 @@ fn emitBytes(self: *Compiler, byte1: u8, byte2: u8) !void {
     try self.emitByte(byte2);
 }
 
+fn emitLoop(self: *Compiler, loop_start: usize) !void {
+    try self.emitByte(@intFromEnum(OpCode.loop));
+
+    const offset = self.currentChunk.code.items.len - loop_start + 2;
+    if (offset > UINT16_MAX) try self.err("Loop body too large.");
+
+    try self.emitByte(@intCast(offset >> 8 & 0xff));
+    try self.emitByte(@intCast(offset & 0xff));
+}
+
 fn emitJump(self: *Compiler, instruction: u8) !usize {
     try self.emitByte(instruction);
     try self.emitByte(0xff);
@@ -190,7 +201,7 @@ fn emitConstant(self: *Compiler, value: Value) !void {
 fn patchJump(self: *Compiler, offset: usize) !void {
     const jump = self.currentChunk.code.items.len - offset - 2;
 
-    if (jump > std.math.maxInt(u16)) try self.err("Too much code to jump over.");
+    if (jump > UINT16_MAX) try self.err("Too much code to jump over.");
 
     self.currentChunk.code.items[offset].byte = @intCast((jump >> 8) & 0xff);
     self.currentChunk.code.items[offset + 1].byte = @intCast(jump & 0xff);
@@ -212,6 +223,21 @@ fn printStatement(self: *Compiler) !void {
     try self.expression();
     try self.consume(.semicolon, "Expect ';' after value.");
     try self.emitByte(@intFromEnum(OpCode.print));
+}
+
+fn whileStatement(self: *Compiler) InterpretError!void {
+    const loop_start = self.currentChunk.code.items.len;
+    try self.consume(.left_paren, "Expect '(' after 'while'.");
+    try self.expression();
+    try self.consume(.right_paren, "Expect ')' after condition.");
+
+    const exit_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+    try self.emitByte(@intFromEnum(OpCode.pop));
+    try self.statement();
+    try self.emitLoop(loop_start);
+
+    try self.patchJump(exit_jump);
+    try self.emitByte(@intFromEnum(OpCode.pop));
 }
 
 fn synchronize(self: *Compiler) void {
@@ -305,6 +331,8 @@ fn statement(self: *Compiler) !void {
         try self.printStatement();
     } else if (self.match(.if_)) {
         try self.ifStatement();
+    } else if (self.match(.while_)) {
+        try self.whileStatement();
     } else if (self.match(.left_brace)) {
         self.beginScope();
         try self.block();
@@ -393,7 +421,7 @@ fn resolveLocal(self: *Compiler, name: *Token) !isize {
 }
 
 fn addLocal(self: *Compiler, name: Token) !void {
-    if (self.localCount == UINT8_COUNT) {
+    if (self.localCount == UINT8_MAX) {
         return self.err("Too many local variables in function.");
     }
 

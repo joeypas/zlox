@@ -165,6 +165,10 @@ fn run(self: *VM) InterpretError!void {
                 const offset = self.readShort();
                 if (isFalsey(self.peek(0))) self.ip += offset;
             },
+            @intFromEnum(OpCode.loop) => {
+                const offset = self.readShort();
+                self.ip -= offset;
+            },
             else => return InterpretError.RuntimeError,
         }
     }
