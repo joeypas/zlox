@@ -225,6 +225,50 @@ fn printStatement(self: *Compiler) !void {
     try self.emitByte(@intFromEnum(OpCode.print));
 }
 
+fn forStatement(self: *Compiler) InterpretError!void {
+    self.beginScope();
+    try self.consume(.left_paren, "Expect '(' after 'for'.");
+    if (self.match(.semicolon)) {
+        // No init.
+    } else if (self.match(.var_)) {
+        try self.varDeclaration();
+    } else {
+        try self.expressionStatement();
+    }
+
+    var loop_start = self.currentChunk.code.items.len;
+    var exit_jump: ?usize = null;
+    if (!self.match(.semicolon)) {
+        try self.expression();
+        try self.consume(.semicolon, "Expect ';' after loop condition.");
+
+        exit_jump = try self.emitJump(@intFromEnum(OpCode.jump_if_false));
+        try self.emitByte(@intFromEnum(OpCode.pop));
+    }
+
+    if (!self.match(.right_paren)) {
+        const body_jump = try self.emitJump(@intFromEnum(OpCode.jump));
+        const increment_start = self.currentChunk.code.items.len;
+        try self.expression();
+        try self.emitByte(@intFromEnum(OpCode.pop));
+        try self.consume(.right_paren, "Expect ')' after for clauses.");
+
+        try self.emitLoop(loop_start);
+        loop_start = increment_start;
+        try self.patchJump(body_jump);
+    }
+
+    try self.statement();
+    try self.emitLoop(loop_start);
+
+    if (exit_jump) |exit| {
+        try self.patchJump(exit);
+        try self.emitByte(@intFromEnum(OpCode.pop));
+    }
+
+    try self.endScope();
+}
+
 fn whileStatement(self: *Compiler) InterpretError!void {
     const loop_start = self.currentChunk.code.items.len;
     try self.consume(.left_paren, "Expect '(' after 'while'.");
@@ -329,6 +373,8 @@ fn declaration(self: *Compiler) InterpretError!void {
 fn statement(self: *Compiler) !void {
     if (self.match(.print)) {
         try self.printStatement();
+    } else if (self.match(.for_)) {
+        try self.forStatement();
     } else if (self.match(.if_)) {
         try self.ifStatement();
     } else if (self.match(.while_)) {
