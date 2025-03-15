@@ -10,7 +10,7 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Table = @import("table.zig").Table;
 const object = @import("object.zig");
-const errlog = std.log.err;
+const errlog = std.log.scoped(.vm).err;
 const VM = @This();
 const STACK_MAX = 256;
 
@@ -58,7 +58,6 @@ pub fn interpret(self: *VM, source: []const u8) InterpretError!void {
     defer chunk.deinit();
 
     compiler.compile(self.allocator, self, source, &chunk, self.out, self.err) catch |err| {
-        errlog("Compile error: {any}\n", .{err});
         return switch (err) {
             InterpretError.InternalError => InterpretError.InternalError,
             else => InterpretError.CompileError,
@@ -199,10 +198,16 @@ fn concatenate(self: *VM) !void {
     const b = self.pop().obj.string;
 
     const len = a.length + b.length;
-    var chars = self.allocator.alloc(u8, len) catch return InterpretError.InternalError;
+    var chars = self.allocator.alloc(u8, len) catch |err| {
+        errlog("{any} in concatenate when alloc.\n", .{err});
+        return InterpretError.InternalError;
+    };
     @memcpy(chars[0..b.length], b.chars);
     @memcpy(chars[b.length..], a.chars);
-    self.push(.{ .obj = .{ .string = object.ObjString.takeString(self.allocator, chars, self) catch return InterpretError.InternalError } });
+    self.push(.{ .obj = .{ .string = object.ObjString.takeString(self.allocator, chars, self) catch |err| {
+        errlog("{any} in concatenate when push.\n", .{err});
+        return InterpretError.InternalError;
+    } } });
 }
 
 fn binaryOp(self: *VM, comptime code: OpCode) !void {
@@ -224,12 +229,22 @@ fn binaryOp(self: *VM, comptime code: OpCode) !void {
 }
 
 fn runtimeError(self: *VM, comptime format: []const u8, args: anytype) !void {
-    self.err.print(format, args) catch return InterpretError.InternalError;
-    self.err.print("\n", .{}) catch return InterpretError.InternalError;
+    self.err.print(format, args) catch |err| {
+        errlog("{any} in runtimeError.\n", .{err});
+        return InterpretError.InternalError;
+    };
+
+    self.err.print("\n", .{}) catch |err| {
+        errlog("{any} in runtimeError.\n", .{err});
+        return InterpretError.InternalError;
+    };
 
     const instruction = if (self.ip[0].line < self.chunk.code.items.len - 1) self.ip[0] else (self.ip - @intFromPtr(self.chunk.code.items.ptr) - 1)[0];
     const line = instruction.line;
-    self.err.print("[line {d}] in script\n", .{line}) catch return InterpretError.InternalError;
+    self.err.print("[line {d}] in script\n", .{line}) catch |err| {
+        errlog("{any} in runtimeError.\n", .{err});
+        return InterpretError.InternalError;
+    };
     self.resetStack();
     return InterpretError.RuntimeError;
 }
