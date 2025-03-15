@@ -10,7 +10,7 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Table = @import("table.zig").Table;
 const object = @import("object.zig");
-
+const errlog = std.log.err;
 const VM = @This();
 const STACK_MAX = 256;
 
@@ -31,10 +31,10 @@ globals: Table,
 strings: Table,
 objects: ArrayList(*object.Obj),
 
-pub fn init(allocator: Allocator, stdout: std.fs.File, stderr: std.fs.File) !VM {
+pub fn init(allocator: Allocator, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter) !VM {
     var vm = VM{
-        .out = stdout.writer().any(),
-        .err = stderr.writer().any(),
+        .out = stdout,
+        .err = stderr,
         .objects = ArrayList(*object.Obj).init(allocator),
         .globals = try Table.init(allocator),
         .strings = try Table.init(allocator),
@@ -58,6 +58,7 @@ pub fn interpret(self: *VM, source: []const u8) InterpretError!void {
     defer chunk.deinit();
 
     compiler.compile(self.allocator, self, source, &chunk, self.out, self.err) catch |err| {
+        errlog("Compile error: {any}\n", .{err});
         return switch (err) {
             InterpretError.InternalError => InterpretError.InternalError,
             else => InterpretError.CompileError,
@@ -101,13 +102,19 @@ fn run(self: *VM) InterpretError!void {
             @intFromEnum(OpCode.define_global) => {
                 //std.debug.print("In define global\n", .{});
                 const name = self.readConstant().obj;
-                _ = self.globals.set(name, self.peek(0)) catch return InterpretError.InternalError;
+                _ = self.globals.set(name, self.peek(0)) catch |err| {
+                    errlog("Error: {any} when define global\n", .{err});
+                    return InterpretError.InternalError;
+                };
                 _ = self.pop();
             },
             @intFromEnum(OpCode.set_global) => {
                 //std.debug.print("In set global\n", .{});
                 const name = self.readConstant().obj;
-                if (self.globals.set(name, self.peek(0)) catch return InterpretError.InternalError) {
+                if (self.globals.set(name, self.peek(0)) catch |err| {
+                    errlog("Error: {any} when set global\n", .{err});
+                    return InterpretError.InternalError;
+                }) {
                     _ = self.globals.delete(name);
                     try self.runtimeError("Undefined variable '{s}'.", .{name.string.chars});
                 }
@@ -139,8 +146,14 @@ fn run(self: *VM) InterpretError!void {
                 }
             },
             @intFromEnum(OpCode.print) => {
-                types.printValue(self.pop(), self.out) catch return InterpretError.InternalError;
-                self.out.print("\n", .{}) catch return InterpretError.InternalError;
+                types.printValue(self.pop(), self.out) catch |err| {
+                    errlog("Error: {any} when printValue.\n", .{err});
+                    return InterpretError.InternalError;
+                };
+                self.out.print("\n", .{}) catch |err| {
+                    errlog("Error: {any} when print\n", .{err});
+                    return InterpretError.InternalError;
+                };
             },
             @intFromEnum(OpCode.return_) => {
                 return;

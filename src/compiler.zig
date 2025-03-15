@@ -12,6 +12,7 @@ const object = @import("object.zig");
 const VM = @import("vm.zig");
 const build_options = @import("build_options");
 const debug = @import("debug.zig");
+const errlog = std.log.err;
 
 const Compiler = @This();
 
@@ -143,7 +144,10 @@ fn end(self: *Compiler) !void {
     try self.emitByte(@intFromEnum(OpCode.return_));
     if (build_options.dev) {
         if (!self.parser.hadError)
-            debug.dissasembleChunk(self.currentChunk, "code", self.stdout) catch return InterpretError.InternalError;
+            debug.dissasembleChunk(self.currentChunk, "code", self.stdout) catch |erro| {
+                errlog("Error: {any} in emitByte.\n", .{erro});
+                return InterpretError.InternalError;
+            };
     }
 }
 
@@ -161,7 +165,10 @@ fn endScope(self: *Compiler) !void {
 }
 
 fn emitByte(self: *Compiler, byte: u8) !void {
-    self.currentChunk.writeChunk(byte, self.parser.previous.line) catch return InterpretError.InternalError;
+    self.currentChunk.writeChunk(byte, self.parser.previous.line) catch |erro| {
+        errlog("Error: {any} in emitByte.\nCurrent byte: {d}\n", .{ erro, byte });
+        return InterpretError.InternalError;
+    };
 }
 
 fn emitBytes(self: *Compiler, byte1: u8, byte2: u8) !void {
@@ -174,7 +181,10 @@ fn emitConstant(self: *Compiler, value: Value) !void {
 }
 
 fn makeConstant(self: *Compiler, value: Value) !u8 {
-    const constant = self.currentChunk.addConstant(value) catch return InterpretError.InternalError;
+    const constant = self.currentChunk.addConstant(value) catch |erro| {
+        errlog("Error: {any} in makeConstant.\nCurrent value: {any}\n", .{ erro, value });
+        return InterpretError.InternalError;
+    };
     if (constant > 255) {
         try self.err("Too many constants in one chunk.");
     }
@@ -321,7 +331,10 @@ fn identifierConstant(self: *Compiler, name: *Token) !u8 {
         self.allocator,
         name.start[0..name.length],
         self.vm,
-    ) catch return InterpretError.InternalError } });
+    ) catch |erro| {
+        errlog("Error: {any} in identifierConstant.\nCurrent name: {any}\n", .{ erro, name });
+        return InterpretError.InternalError;
+    } } });
     return constant;
 }
 
@@ -375,7 +388,10 @@ fn declareVariable(self: *Compiler) !void {
 }
 
 fn number(self: *Compiler, _: bool) !void {
-    const value = std.fmt.parseFloat(f32, self.parser.previous.start[0..self.parser.previous.length]) catch return InterpretError.InternalError;
+    const value = std.fmt.parseFloat(f32, self.parser.previous.start[0..self.parser.previous.length]) catch |erro| {
+        errlog("Error: {any} in number.\n", .{erro});
+        return InterpretError.InternalError;
+    };
 
     try self.emitConstant(Value{ .number = value });
 }
@@ -388,7 +404,7 @@ fn string(self: *Compiler, _: bool) !void {
                 self.parser.previous.start[1 .. self.parser.previous.length - 1],
                 self.vm,
             ) catch |erro| {
-                std.debug.print("{any}", .{erro});
+                errlog("{any}", .{erro});
                 return InterpretError.InternalError;
             },
         } },
@@ -517,7 +533,9 @@ fn compileTest(source: []const u8, out: std.io.AnyWriter) InterpretError!void {
     while (true) {
         const token = scanner.scanToken();
         if (token.line != line) {
-            out.print("{d:0>4} ", .{token.line}) catch return InterpretError.InternalError;
+            out.print("{d:0>4} ", .{token.line}) catch {
+                return InterpretError.InternalError;
+            };
             line = @intCast(token.line);
         } else {
             out.print("   | ", .{}) catch return InterpretError.InternalError;
