@@ -12,7 +12,7 @@ const object = @import("object.zig");
 const VM = @import("vm.zig");
 const build_options = @import("build_options");
 const debug = @import("debug.zig");
-const errlog = std.log.err;
+const errlog = std.log.scoped(.compiler).err;
 
 const Compiler = @This();
 
@@ -332,7 +332,7 @@ fn identifierConstant(self: *Compiler, name: *Token) !u8 {
         name.start[0..name.length],
         self.vm,
     ) catch |erro| {
-        errlog("Error: {any} in identifierConstant.\nCurrent name: {any}\n", .{ erro, name });
+        errlog("{any} in identifierConstant.\nCurrent name: {any}\n", .{ erro, name });
         return InterpretError.InternalError;
     } } });
     return constant;
@@ -389,7 +389,7 @@ fn declareVariable(self: *Compiler) !void {
 
 fn number(self: *Compiler, _: bool) !void {
     const value = std.fmt.parseFloat(f32, self.parser.previous.start[0..self.parser.previous.length]) catch |erro| {
-        errlog("Error: {any} in number.\n", .{erro});
+        errlog("{any} in number.\n", .{erro});
         return InterpretError.InternalError;
     };
 
