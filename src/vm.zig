@@ -159,11 +159,15 @@ fn run(self: *VM) InterpretError!void {
             },
             @intFromEnum(OpCode.jump) => {
                 const offset = self.readShort();
-                self.ip += @intCast(offset);
+                self.ip += offset;
             },
             @intFromEnum(OpCode.jump_if_false) => {
                 const offset = self.readShort();
                 if (isFalsey(self.peek(0))) self.ip += offset;
+            },
+            @intFromEnum(OpCode.case) => {
+                const offset = self.readShort();
+                if (!Value.valuesEqual(self.peek(0), self.peek(1))) self.ip += offset;
             },
             @intFromEnum(OpCode.loop) => {
                 const offset = self.readShort();

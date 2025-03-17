@@ -8,6 +8,7 @@ pub const TokenType = enum(usize) {
     right_paren,
     left_brace,
     right_brace,
+    colon,
     comma,
     dot,
     minus,
@@ -30,7 +31,9 @@ pub const TokenType = enum(usize) {
     number,
     // Keywords.
     and_,
+    case,
     class,
+    default,
     else_,
     false_,
     for_,
@@ -41,6 +44,7 @@ pub const TokenType = enum(usize) {
     print,
     return_,
     super,
+    switch_,
     this,
     true_,
     var_,
@@ -160,6 +164,7 @@ pub fn scanToken(self: *Scanner) Token {
         '}' => return self.makeToken(.right_brace),
         ';' => return self.makeToken(.semicolon),
         ',' => return self.makeToken(.comma),
+        ':' => return self.makeToken(.colon),
         '.' => return self.makeToken(.dot),
         '-' => return self.makeToken(.minus),
         '+' => return self.makeToken(.plus),
@@ -184,7 +189,16 @@ fn identifier(self: *Scanner) Token {
 fn identifierType(self: *Scanner) TokenType {
     switch (self.itr.start[0]) {
         'a' => return self.itr.checkKeyword(1, 2, "nd", .and_),
-        'c' => return self.itr.checkKeyword(1, 4, "lass", .class),
+        'c' => {
+            if (@as(usize, @intFromPtr(self.itr.current)) - @as(usize, @intFromPtr(self.itr.start)) > 1) {
+                switch (self.itr.start[1]) {
+                    'a' => return self.itr.checkKeyword(2, 2, "se", .case),
+                    'l' => return self.itr.checkKeyword(2, 3, "ass", .class),
+                    else => return TokenType.identifier,
+                }
+            }
+        },
+        'd' => return self.itr.checkKeyword(1, 6, "efault", .default),
         'e' => return self.itr.checkKeyword(1, 3, "lse", .else_),
         'f' => {
             if (@as(usize, @intFromPtr(self.itr.current)) - @as(usize, @intFromPtr(self.itr.start)) > 1) {
@@ -201,7 +215,15 @@ fn identifierType(self: *Scanner) TokenType {
         'o' => return self.itr.checkKeyword(1, 1, "r", .or_),
         'p' => return self.itr.checkKeyword(1, 4, "rint", .print),
         'r' => return self.itr.checkKeyword(1, 5, "eturn", .return_),
-        's' => return self.itr.checkKeyword(1, 4, "uper", .super),
+        's' => {
+            if (@as(usize, @intFromPtr(self.itr.current)) - @as(usize, @intFromPtr(self.itr.start)) > 1) {
+                switch (self.itr.start[1]) {
+                    'u' => return self.itr.checkKeyword(2, 3, "per", .super),
+                    'w' => return self.itr.checkKeyword(2, 4, "itch", .switch_),
+                    else => return TokenType.identifier,
+                }
+            }
+        },
         't' => {
             if (@as(usize, @intFromPtr(self.itr.current)) - @as(usize, @intFromPtr(self.itr.start)) > 1) {
                 switch (self.itr.start[1]) {

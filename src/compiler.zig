@@ -59,6 +59,7 @@ const rules = [_]ParseRule{
     .{ .prefix = null, .infix = null, .precedence = .none }, // right_paren
     .{ .prefix = null, .infix = null, .precedence = .none }, // left_brace
     .{ .prefix = null, .infix = null, .precedence = .none }, // right_brace
+    .{ .prefix = null, .infix = null, .precedence = .none }, // colon
     .{ .prefix = null, .infix = null, .precedence = .none }, // comma
     .{ .prefix = null, .infix = null, .precedence = .none }, // dot
     .{ .prefix = Compiler.unary, .infix = Compiler.binary, .precedence = .term }, // minus
@@ -78,7 +79,9 @@ const rules = [_]ParseRule{
     .{ .prefix = Compiler.string, .infix = null, .precedence = .none }, // TOKEN_STRING
     .{ .prefix = Compiler.number, .infix = null, .precedence = .none }, // TOKEN_NUMBER
     .{ .prefix = null, .infix = Compiler.and_, .precedence = .and_ }, // TOKEN_AND
+    .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_CASE
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_CLASS
+    .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_DEFAULT
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_ELSE
     .{ .prefix = Compiler.literal, .infix = null, .precedence = .none }, // TOKEN_FALSE
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_FOR
@@ -89,6 +92,7 @@ const rules = [_]ParseRule{
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_PRINT
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_RETURN
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_SUPER
+    .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_SWITCH
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_THIS
     .{ .prefix = Compiler.literal, .infix = null, .precedence = .none }, // TOKEN_TRUE
     .{ .prefix = null, .infix = null, .precedence = .none }, // TOKEN_VAR
@@ -346,6 +350,53 @@ fn ifStatement(self: *Compiler) InterpretError!void {
     try self.patchJump(else_jump);
 }
 
+fn switchStatement(self: *Compiler) InterpretError!void {
+    try self.consume(.left_paren, "Expect '(' after 'switch'.");
+    try self.expression();
+    try self.consume(.right_paren, "Expect ')' after confition.");
+    try self.consume(.left_brace, "Expect '{' before cases.");
+
+    var jumps: [UINT8_MAX]usize = undefined;
+    var case_jumps: [UINT8_MAX]usize = undefined;
+    var count: usize = 0;
+
+    while (!self.check(.right_brace) and !self.check(.eof)) {
+        if (self.match(.case)) {
+            if (count > 0) {
+                try self.patchJump(case_jumps[count - 1]);
+                try self.emitByte(@intFromEnum(OpCode.pop));
+            }
+            try self.expression();
+            try self.consume(.colon, "Expect ':' after 'expression'.");
+            case_jumps[count] = try self.emitJump(@intFromEnum(OpCode.case));
+            try self.statement();
+            try self.emitByte(@intFromEnum(OpCode.pop));
+            jumps[count] = try self.emitJump(@intFromEnum(OpCode.jump));
+            count += 1;
+        }
+        if (self.match(.default)) {
+            try self.consume(.colon, "Expect ':' after 'default'.");
+            if (count > 0) {
+                try self.patchJump(case_jumps[count - 1]);
+                try self.emitByte(@intFromEnum(OpCode.pop));
+            }
+            try self.statement();
+        }
+    }
+
+    try self.consume(.right_brace, "Expect '}' after cases.");
+    if (count == 0) {
+        try self.err("At least one case or default reqired in switch statement");
+        return InterpretError.CompileError;
+    }
+
+    for (0..count) |i| {
+        try self.patchJump(jumps[i]);
+    }
+
+    try self.emitByte(@intFromEnum(OpCode.pop));
+}
+
 fn varDeclaration(self: *Compiler) !void {
     const global = try self.parseVariable("Expect variable name.");
 
@@ -373,6 +424,8 @@ fn declaration(self: *Compiler) InterpretError!void {
 fn statement(self: *Compiler) !void {
     if (self.match(.print)) {
         try self.printStatement();
+    } else if (self.match(.switch_)) {
+        try self.switchStatement();
     } else if (self.match(.for_)) {
         try self.forStatement();
     } else if (self.match(.if_)) {
@@ -633,10 +686,12 @@ fn check(self: *Compiler, comptime T: TokenType) bool {
 
 fn errorAtCurrent(self: *Compiler, message: []const u8) !void {
     self.errorAt(&self.parser.current, message) catch return InterpretError.InternalError;
+    return InterpretError.CompileError;
 }
 
 fn err(self: *Compiler, message: []const u8) !void {
     self.errorAt(&self.parser.previous, message) catch return InterpretError.InternalError;
+    return InterpretError.CompileError;
 }
 
 fn errorAt(self: *Compiler, token: *Token, message: []const u8) !void {
