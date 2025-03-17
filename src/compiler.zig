@@ -359,33 +359,33 @@ fn switchStatement(self: *Compiler) InterpretError!void {
     var jumps: [UINT8_MAX]usize = undefined;
     var case_jumps: [UINT8_MAX]usize = undefined;
     var count: usize = 0;
+    var at_least_one = false;
 
     while (!self.check(.right_brace) and !self.check(.eof)) {
+        if (count > 0) {
+            try self.patchJump(case_jumps[count - 1]);
+            try self.emitByte(@intFromEnum(OpCode.pop));
+        }
         if (self.match(.case)) {
-            if (count > 0) {
-                try self.patchJump(case_jumps[count - 1]);
-                try self.emitByte(@intFromEnum(OpCode.pop));
-            }
             try self.expression();
             try self.consume(.colon, "Expect ':' after 'expression'.");
             case_jumps[count] = try self.emitJump(@intFromEnum(OpCode.case));
-            try self.statement();
             try self.emitByte(@intFromEnum(OpCode.pop));
-            jumps[count] = try self.emitJump(@intFromEnum(OpCode.jump));
-            count += 1;
-        }
-        if (self.match(.default)) {
-            try self.consume(.colon, "Expect ':' after 'default'.");
-            if (count > 0) {
-                try self.patchJump(case_jumps[count - 1]);
-                try self.emitByte(@intFromEnum(OpCode.pop));
-            }
             try self.statement();
+            jumps[count] = try self.emitJump(@intFromEnum(OpCode.jump));
+            at_least_one = true;
+            count += 1;
+        } else if (self.match(.default)) {
+            try self.consume(.colon, "Expect ':' after 'default'.");
+            try self.statement();
+            at_least_one = true;
+        } else {
+            try self.err("Not switch or default");
         }
     }
 
     try self.consume(.right_brace, "Expect '}' after cases.");
-    if (count == 0) {
+    if (!at_least_one) {
         try self.err("At least one case or default reqired in switch statement");
         return InterpretError.CompileError;
     }
