@@ -430,7 +430,7 @@ fn switchStatement(self: *Compiler) InterpretError!void {
     try self.consume(.right_brace, "Expect '}' after cases.");
     if (!at_least_one) {
         try self.err("At least one case or default reqired in switch statement");
-        return InterpretError.CompileError;
+        //return InterpretError.CompileError;
     }
 
     for (0..count) |i| {
@@ -729,12 +729,10 @@ fn check(self: *Compiler, comptime T: TokenType) bool {
 
 fn errorAtCurrent(self: *Compiler, message: []const u8) !void {
     self.errorAt(&self.parser.current, message) catch return InterpretError.InternalError;
-    return InterpretError.CompileError;
 }
 
 fn err(self: *Compiler, message: []const u8) !void {
     self.errorAt(&self.parser.previous, message) catch return InterpretError.InternalError;
-    return InterpretError.CompileError;
 }
 
 fn errorAt(self: *Compiler, token: *Token, message: []const u8) !void {
