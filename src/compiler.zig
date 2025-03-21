@@ -8,6 +8,7 @@ const Value = types.Value;
 const Scanner = @import("scanner.zig");
 const Token = Scanner.Token;
 const TokenType = Scanner.TokenType;
+const ObjFunction = object.ObjFunction;
 const object = @import("object.zig");
 const VM = @import("vm.zig");
 const build_options = @import("build_options");
@@ -36,6 +37,11 @@ const Precedence = enum(u8) {
 const Local = struct {
     name: Token,
     depth: isize,
+};
+
+const FunctionType = enum {
+    function,
+    script,
 };
 
 const ParseFn = ?*const fn (*Compiler, bool) InterpretError!void;
@@ -112,18 +118,24 @@ stderr: std.io.AnyWriter,
 stdout: std.io.AnyWriter,
 currentChunk: *Chunk,
 vm: *VM,
+function: *ObjFunction,
+f_type: FunctionType,
 locals: [UINT8_MAX]Local = undefined,
 localCount: isize = 0,
 scopeDepth: isize = 0,
 
-pub fn compile(
+pub fn init(
     allocator: Allocator,
     vm: *VM,
     source: []const u8,
-    chunk: *Chunk,
     stdout: std.io.AnyWriter,
     stderr: std.io.AnyWriter,
-) InterpretError!void {
+    f_type: FunctionType,
+) !Compiler {
+    const func = ObjFunction.create(allocator) catch |erro| {
+        errlog("{any} when initializing function.\n", .{erro});
+        return InterpretError.InternalError;
+    };
     var compiler = Compiler{
         .vm = vm,
         .allocator = allocator,
@@ -131,29 +143,60 @@ pub fn compile(
         .stderr = stderr,
         .stdout = stdout,
         .parser = .{},
-        .currentChunk = chunk,
+        .currentChunk = &func.chunk,
+        .function = func,
+        .f_type = f_type,
     };
 
+    defer compiler.localCount += 1;
+    var local = &compiler.locals[compiler.localCount];
+    local.depth = 0;
+    local.name.start = "";
+    local.name.length = 0;
+
+    return compiler;
+}
+
+pub fn compile(
+    allocator: Allocator,
+    vm: *VM,
+    source: []const u8,
+    stdout: std.io.AnyWriter,
+    stderr: std.io.AnyWriter,
+) InterpretError!*ObjFunction {
+    var compiler = try Compiler.init(
+        allocator,
+        vm,
+        source,
+        stdout,
+        stderr,
+        .script,
+    );
+
     compiler.advance();
-    //try compiler.expression();
-    //try compiler.consume(.eof, "Expect end of expression.");
 
     while (!compiler.match(.eof)) {
         try compiler.declaration();
     }
-    try compiler.end();
+    const func = try compiler.end();
     if (compiler.parser.hadError) return InterpretError.CompileError;
+    return func;
 }
 
-fn end(self: *Compiler) !void {
+fn end(self: *Compiler) !*ObjFunction {
     try self.emitByte(@intFromEnum(OpCode.return_));
+    const function = self.function;
     if (build_options.dev) {
-        if (!self.parser.hadError)
-            debug.dissasembleChunk(self.currentChunk, "code", self.stdout) catch |erro| {
-                errlog("Error: {any} in emitByte.\n", .{erro});
+        if (!self.parser.hadError) {
+            const name = if (function.name != null) function.name.?.chars else "<script>";
+            debug.dissasembleChunk(self.currentChunk, name, self.stdout) catch |erro| {
+                errlog("Error: {any} in dissasemble.\n", .{erro});
                 return InterpretError.InternalError;
             };
+        }
     }
+
+    return function;
 }
 
 fn beginScope(self: *Compiler) void {
@@ -708,31 +751,4 @@ fn errorAt(self: *Compiler, token: *Token, message: []const u8) !void {
 
     try self.stderr.print(": {s}\n", .{message});
     self.parser.hadError = true;
-}
-
-fn compileTest(source: []const u8, out: std.io.AnyWriter) InterpretError!void {
-    var scanner = Scanner.init(source);
-    defer scanner.deinit();
-    var line: isize = -1;
-
-    while (true) {
-        const token = scanner.scanToken();
-        if (token.line != line) {
-            out.print("{d:0>4} ", .{token.line}) catch {
-                return InterpretError.InternalError;
-            };
-            line = @intCast(token.line);
-        } else {
-            out.print("   | ", .{}) catch return InterpretError.InternalError;
-        }
-        out.print("{} '{s}'\n", .{ token.type, token.start[0..token.length] }) catch return InterpretError.InternalError;
-
-        if (token.type == .eof) break;
-    }
-}
-
-test "compile" {
-    var stdout = std.io.getStdOut();
-    defer stdout.close();
-    try compileTest(" \"st\" + \"ri\" ", stdout.writer().any());
 }

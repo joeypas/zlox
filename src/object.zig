@@ -1,16 +1,19 @@
 const std = @import("std");
 const types = @import("types.zig");
 const VM = @import("vm.zig");
+const Chunk = types.Chunk;
 const Allocator = std.mem.Allocator;
 const Value = types.Value;
 const Table = @import("table.zig").Table;
 
 pub const ObjType = enum {
     string,
+    function,
 };
 
 pub const Obj = union(ObjType) {
     string: *ObjString,
+    function: *ObjFunction,
 
     pub fn getType(self: Obj) ObjType {
         return std.meta.activeTag(self);
@@ -29,13 +32,19 @@ pub const Obj = union(ObjType) {
     pub fn destroy(self: Obj) void {
         switch (self) {
             .string => |str| str.destroy(),
+            .function => |fun| fun.destroy(),
         }
     }
 
     pub fn printObject(self: Obj, out: std.io.AnyWriter) !void {
         switch (self) {
-            .string => |str| {
-                try out.print("{s}", .{str.asArray()});
+            .string => |str| try out.print("{s}", .{str.asArray()}),
+            .function => |fun| {
+                if (fun.name) |name| {
+                    try out.print("<script>", .{name.asArray()});
+                } else {
+                    try out.print("<fn ?>", .{});
+                }
             },
         }
     }
@@ -50,12 +59,37 @@ pub fn objEql(a: Value, b: Value) bool {
 
     return switch (a.obj) {
         .string => a.obj.string == b.obj.string,
+        else => false,
     };
 }
 
 pub fn hashString(key: []const u8) u32 {
     return std.hash.Fnv1a_32.hash(key);
 }
+
+pub const ObjFunction = struct {
+    allocator: Allocator,
+    arity: usize,
+    chunk: Chunk,
+    name: ?*ObjString,
+
+    pub fn create(allocator: Allocator) !*ObjFunction {
+        const ret = try allocator.create(ObjFunction);
+
+        ret.* = ObjFunction{
+            .allocator = allocator,
+            .arity = 0,
+            .chunk = Chunk.init(allocator),
+            .name = null,
+        };
+        return ret;
+    }
+
+    pub fn destroy(self: *ObjFunction) void {
+        self.chunk.deinit();
+        self.allocator.destroy(self);
+    }
+};
 
 pub const ObjString = struct {
     //obj: *Obj,
