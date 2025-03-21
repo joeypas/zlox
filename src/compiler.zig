@@ -387,7 +387,7 @@ fn switchStatement(self: *Compiler) InterpretError!void {
     try self.consume(.right_brace, "Expect '}' after cases.");
     if (!at_least_one) {
         try self.err("At least one case or default reqired in switch statement");
-        return InterpretError.CompileError;
+        //return InterpretError.CompileError;
     }
 
     for (0..count) |i| {
@@ -686,12 +686,10 @@ fn check(self: *Compiler, comptime T: TokenType) bool {
 
 fn errorAtCurrent(self: *Compiler, message: []const u8) !void {
     self.errorAt(&self.parser.current, message) catch return InterpretError.InternalError;
-    return InterpretError.CompileError;
 }
 
 fn err(self: *Compiler, message: []const u8) !void {
     self.errorAt(&self.parser.previous, message) catch return InterpretError.InternalError;
-    return InterpretError.CompileError;
 }
 
 fn errorAt(self: *Compiler, token: *Token, message: []const u8) !void {
@@ -708,31 +706,4 @@ fn errorAt(self: *Compiler, token: *Token, message: []const u8) !void {
 
     try self.stderr.print(": {s}\n", .{message});
     self.parser.hadError = true;
-}
-
-fn compileTest(source: []const u8, out: std.io.AnyWriter) InterpretError!void {
-    var scanner = Scanner.init(source);
-    defer scanner.deinit();
-    var line: isize = -1;
-
-    while (true) {
-        const token = scanner.scanToken();
-        if (token.line != line) {
-            out.print("{d:0>4} ", .{token.line}) catch {
-                return InterpretError.InternalError;
-            };
-            line = @intCast(token.line);
-        } else {
-            out.print("   | ", .{}) catch return InterpretError.InternalError;
-        }
-        out.print("{} '{s}'\n", .{ token.type, token.start[0..token.length] }) catch return InterpretError.InternalError;
-
-        if (token.type == .eof) break;
-    }
-}
-
-test "compile" {
-    var stdout = std.io.getStdOut();
-    defer stdout.close();
-    try compileTest(" \"st\" + \"ri\" ", stdout.writer().any());
 }

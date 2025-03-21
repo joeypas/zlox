@@ -57,12 +57,7 @@ pub fn interpret(self: *VM, source: []const u8) InterpretError!void {
     var chunk = Chunk.init(self.allocator);
     defer chunk.deinit();
 
-    compiler.compile(self.allocator, self, source, &chunk, self.out, self.err) catch |err| {
-        return switch (err) {
-            InterpretError.InternalError => InterpretError.InternalError,
-            else => InterpretError.CompileError,
-        };
-    };
+    try compiler.compile(self.allocator, self, source, &chunk, self.out, self.err);
 
     self.chunk = &chunk;
     self.ip = self.chunk.code.items.ptr;
@@ -95,7 +90,7 @@ fn run(self: *VM) InterpretError!void {
                 if (self.globals.get(name)) |value| {
                     self.push(value.value);
                 } else {
-                    try self.runtimeError("Undefined variable '{s}'", .{name.string.chars});
+                    return self.runtimeError("Undefined variable '{s}'", .{name.string.chars});
                 }
             },
             @intFromEnum(OpCode.define_global) => {
@@ -115,7 +110,7 @@ fn run(self: *VM) InterpretError!void {
                     return InterpretError.InternalError;
                 }) {
                     _ = self.globals.delete(name);
-                    try self.runtimeError("Undefined variable '{s}'.", .{name.string.chars});
+                    return self.runtimeError("Undefined variable '{s}'.", .{name.string.chars});
                 }
             },
             @intFromEnum(OpCode.equal) => {
@@ -140,7 +135,7 @@ fn run(self: *VM) InterpretError!void {
                 switch (self.peek(0)) {
                     .number => self.push(.{ .number = -1 * self.pop().number }),
                     else => {
-                        try self.runtimeError("Operand must be a number.", .{});
+                        return self.runtimeError("Operand must be a number.", .{});
                     },
                 }
             },
@@ -233,8 +228,7 @@ fn concatenate(self: *VM) !void {
 
 fn binaryOp(self: *VM, comptime code: OpCode) !void {
     if (!Value.isNumber(self.peek(0)) or !Value.isNumber(self.peek(1))) {
-        try self.runtimeError("Operands must be numbers.", .{});
-        return InterpretError.RuntimeError;
+        return self.runtimeError("Operands must be numbers.", .{});
     }
     const b = self.pop().number;
     const a = self.pop().number;
@@ -249,7 +243,7 @@ fn binaryOp(self: *VM, comptime code: OpCode) !void {
     }
 }
 
-fn runtimeError(self: *VM, comptime format: []const u8, args: anytype) !void {
+fn runtimeError(self: *VM, comptime format: []const u8, args: anytype) InterpretError {
     self.err.print(format, args) catch |err| {
         errlog("{any} in runtimeError.\n", .{err});
         return InterpretError.InternalError;
