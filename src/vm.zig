@@ -1,18 +1,20 @@
 const std = @import("std");
 const types = @import("types.zig");
 const compiler = @import("compiler.zig");
+const object = @import("object.zig");
 const Chunk = types.Chunk;
 const OpCode = types.OpCode;
 const Value = types.Value;
 const ValueType = types.ValueType;
 const Instruction = types.Instruction;
+const ObjFunction = object.ObjFunction;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Table = @import("table.zig").Table;
-const object = @import("object.zig");
 const errlog = std.log.scoped(.vm).err;
 const VM = @This();
-const STACK_MAX = 256;
+const STACK_MAX = FRAMES_MAX * std.math.maxInt(u8);
+const FRAMES_MAX = 64;
 
 pub const InterpretError = error{
     CompileError,
@@ -20,11 +22,17 @@ pub const InterpretError = error{
     InternalError,
 };
 
+const CallFrame = struct {
+    function: *ObjFunction = undefined,
+    ip: [*]Instruction = undefined,
+    slots: []Value = undefined,
+};
+
 out: std.io.AnyWriter,
 err: std.io.AnyWriter,
 allocator: Allocator,
-chunk: *Chunk = undefined,
-ip: [*]Instruction = undefined,
+frames: [FRAMES_MAX]CallFrame = undefined,
+frame_count: usize = 0,
 stack: [STACK_MAX]Value = undefined,
 stackTop: [*]Value = undefined,
 globals: Table,
@@ -54,23 +62,27 @@ pub fn deinit(self: *VM) void {
 }
 
 pub fn interpret(self: *VM, source: []const u8) InterpretError!void {
-    var chunk = Chunk.init(self.allocator);
-    defer chunk.deinit();
+    //var chunk = Chunk.init(self.allocator);
+    //defer chunk.deinit();
+    var frame = &self.frames[self.frame_count];
+    self.frame_count += 1;
+    const func = try compiler.compile(self.allocator, self, source, self.out, self.err);
+    defer func.destroy();
 
-    try compiler.compile(self.allocator, self, source, &chunk, self.out, self.err);
+    frame.function = func;
+    frame.ip = func.chunk.code.items.ptr;
+    frame.slots = &self.stack;
 
-    self.chunk = &chunk;
-    self.ip = self.chunk.code.items.ptr;
-
-    try self.run();
+    return self.run();
 }
 
 fn run(self: *VM) InterpretError!void {
+    var frame = &self.frames[self.frame_count - 1];
     while (true) {
-        const instruction = self.readByte();
+        const instruction = readByte(frame);
         switch (instruction.byte) {
             @intFromEnum(OpCode.constant) => {
-                const constant = self.readConstant();
+                const constant = readConstant(frame);
                 self.push(constant);
             },
             @intFromEnum(OpCode.nil) => self.push(.{ .nil = 0 }),
@@ -78,15 +90,15 @@ fn run(self: *VM) InterpretError!void {
             @intFromEnum(OpCode.false_) => self.push(.{ .boolean = false }),
             @intFromEnum(OpCode.pop) => _ = self.pop(),
             @intFromEnum(OpCode.get_local) => {
-                const slot = self.readByte().byte;
-                self.push(self.stack[slot]);
+                const slot = readByte(frame).byte;
+                self.push(frame.slots[slot]);
             },
             @intFromEnum(OpCode.set_local) => {
-                const slot = self.readByte().byte;
-                self.stack[slot] = self.peek(0);
+                const slot = readByte(frame).byte;
+                frame.slots[slot] = self.peek(0);
             },
             @intFromEnum(OpCode.get_global) => {
-                const name = self.readConstant().obj;
+                const name = readConstant(frame).obj;
                 if (self.globals.get(name)) |value| {
                     self.push(value.value);
                 } else {
@@ -95,7 +107,7 @@ fn run(self: *VM) InterpretError!void {
             },
             @intFromEnum(OpCode.define_global) => {
                 //std.debug.print("In define global\n", .{});
-                const name = self.readConstant().obj;
+                const name = readConstant(frame).obj;
                 _ = self.globals.set(name, self.peek(0)) catch |err| {
                     errlog("Error: {any} when define global\n", .{err});
                     return InterpretError.InternalError;
@@ -104,7 +116,7 @@ fn run(self: *VM) InterpretError!void {
             },
             @intFromEnum(OpCode.set_global) => {
                 //std.debug.print("In set global\n", .{});
-                const name = self.readConstant().obj;
+                const name = readConstant(frame).obj;
                 if (self.globals.set(name, self.peek(0)) catch |err| {
                     errlog("Error: {any} when set global\n", .{err});
                     return InterpretError.InternalError;
@@ -153,42 +165,43 @@ fn run(self: *VM) InterpretError!void {
                 return;
             },
             @intFromEnum(OpCode.jump) => {
-                const offset = self.readShort();
-                self.ip += offset;
+                const offset = readShort(frame);
+                frame.ip += offset;
             },
             @intFromEnum(OpCode.jump_if_false) => {
-                const offset = self.readShort();
-                if (isFalsey(self.peek(0))) self.ip += offset;
+                const offset = readShort(frame);
+                if (isFalsey(self.peek(0))) frame.ip += offset;
             },
             @intFromEnum(OpCode.case) => {
-                const offset = self.readShort();
-                if (!Value.valuesEqual(self.peek(0), self.peek(1))) self.ip += offset;
+                const offset = readShort(frame);
+                if (!Value.valuesEqual(self.peek(0), self.peek(1))) frame.ip += offset;
             },
             @intFromEnum(OpCode.loop) => {
-                const offset = self.readShort();
-                self.ip -= offset;
+                const offset = readShort(frame);
+                frame.ip -= offset;
             },
             else => return InterpretError.RuntimeError,
         }
     }
 }
 
-fn readByte(self: *VM) Instruction {
-    defer self.ip += 1;
-    return self.ip[0];
+fn readByte(frame: *CallFrame) Instruction {
+    defer frame.ip += 1;
+    return frame.ip[0];
 }
 
-fn readShort(self: *VM) u16 {
-    defer self.ip += 2;
-    return @intCast(@as(u16, @intCast(self.ip[0].byte)) << 8 | self.ip[1].byte);
+fn readShort(frame: *CallFrame) u16 {
+    defer frame.ip += 2;
+    return @intCast(@as(u16, @intCast(frame.ip[0].byte)) << 8 | frame.ip[1].byte);
 }
 
-fn readConstant(self: *VM) types.Value {
-    return self.chunk.constants.items[self.readByte().byte];
+fn readConstant(frame: *CallFrame) types.Value {
+    return frame.function.chunk.constants.items[readByte(frame).byte];
 }
 
 fn resetStack(self: *VM) void {
     self.stackTop = &self.stack;
+    self.frame_count = 0;
 }
 
 fn push(self: *VM, value: Value) void {
@@ -254,7 +267,8 @@ fn runtimeError(self: *VM, comptime format: []const u8, args: anytype) Interpret
         return InterpretError.InternalError;
     };
 
-    const instruction = if (self.ip[0].line < self.chunk.code.items.len - 1) self.ip[0] else (self.ip - @intFromPtr(self.chunk.code.items.ptr) - 1)[0];
+    const frame = self.frames[self.frame_count - 1];
+    const instruction = if (frame.ip[0].line < frame.function.chunk.code.items.len - 1) frame.ip[0] else (frame.ip - @intFromPtr(frame.function.chunk.code.items.ptr) - 1)[0];
     const line = instruction.line;
     self.err.print("[line {d}] in script\n", .{line}) catch |err| {
         errlog("{any} in runtimeError.\n", .{err});

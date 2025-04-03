@@ -61,7 +61,7 @@ const Parser = struct {
 
 const rules = [_]ParseRule{
     // Assigning function pointers and precedence
-    .{ .prefix = Compiler.grouping, .infix = null, .precedence = .none }, // left_paren
+    .{ .prefix = Compiler.grouping, .infix = Compiler.call, .precedence = .none }, // left_paren
     .{ .prefix = null, .infix = null, .precedence = .none }, // right_paren
     .{ .prefix = null, .infix = null, .precedence = .none }, // left_brace
     .{ .prefix = null, .infix = null, .precedence = .none }, // right_brace
@@ -113,12 +113,12 @@ fn getRule(ttype: TokenType) *const ParseRule {
 
 allocator: Allocator,
 parser: Parser,
-scanner: Scanner,
+scanner: *Scanner,
 stderr: std.io.AnyWriter,
 stdout: std.io.AnyWriter,
 currentChunk: *Chunk,
 vm: *VM,
-function: *ObjFunction,
+func: *ObjFunction,
 f_type: FunctionType,
 locals: [UINT8_MAX]Local = undefined,
 localCount: isize = 0,
@@ -127,10 +127,11 @@ scopeDepth: isize = 0,
 pub fn init(
     allocator: Allocator,
     vm: *VM,
-    source: []const u8,
+    scanner: *Scanner,
     stdout: std.io.AnyWriter,
     stderr: std.io.AnyWriter,
     f_type: FunctionType,
+    name: ?[]u8,
 ) !Compiler {
     const func = ObjFunction.create(allocator) catch |erro| {
         errlog("{any} when initializing function.\n", .{erro});
@@ -139,17 +140,21 @@ pub fn init(
     var compiler = Compiler{
         .vm = vm,
         .allocator = allocator,
-        .scanner = Scanner.init(source),
+        .scanner = scanner,
         .stderr = stderr,
         .stdout = stdout,
         .parser = .{},
         .currentChunk = &func.chunk,
-        .function = func,
+        .func = func,
         .f_type = f_type,
     };
 
+    if (type != FunctionType.script) {
+        compiler.func.name = try object.ObjString.copyString(allocator, name.?, vm);
+    }
+
     defer compiler.localCount += 1;
-    var local = &compiler.locals[compiler.localCount];
+    var local = &compiler.locals[0];
     local.depth = 0;
     local.name.start = "";
     local.name.length = 0;
@@ -167,10 +172,11 @@ pub fn compile(
     var compiler = try Compiler.init(
         allocator,
         vm,
-        source,
+        &Scanner.init(source),
         stdout,
         stderr,
         .script,
+        null,
     );
 
     compiler.advance();
@@ -185,7 +191,7 @@ pub fn compile(
 
 fn end(self: *Compiler) !*ObjFunction {
     try self.emitByte(@intFromEnum(OpCode.return_));
-    const function = self.function;
+    const func = self.func;
     if (build_options.dev) {
         if (!self.parser.hadError) {
             const name = if (function.name != null) function.name.?.chars else "<script>";
@@ -196,7 +202,7 @@ fn end(self: *Compiler) !*ObjFunction {
         }
     }
 
-    return function;
+    return func;
 }
 
 fn beginScope(self: *Compiler) void {
@@ -369,6 +375,39 @@ fn block(self: *Compiler) !void {
     try self.consume(.right_brace, "Expect '}' after block.");
 }
 
+fn function(self: *Compiler, f_type: FunctionType) !void {
+    var compiler = try init(self.allocator, self.vm, self.scanner, self.stdout, self.stderr, f_type);
+    compiler.beginScope();
+
+    compiler.consume(.left_paren, "Expect '(' after function name.");
+    if (!compiler.check(.right_paren)) {
+        while (true) {
+            compiler.func.arity += 1;
+            if (compiler.func.arity > 255) {
+                try self.errorAtCurrent("Can't have more than 255 parameters.");
+            }
+
+            const constant = try compiler.parseVariable("Expect parameter name.");
+            try compiler.defineVariable(constant);
+
+            if (!compiler.match(.comma)) break;
+        }
+    }
+    compiler.consume(.right_paren, "Expect ')' after parameters.");
+    compiler.consume(.left_brace, "Expect '{' before function body.");
+    try compiler.block();
+
+    const func = try compiler.end();
+    try self.emitBytes(@intFromEnum(OpCode.constant), try self.makeConstant(.{ .obj = .{ .function = func } }));
+}
+
+fn funDeclaration(self: Compiler) !void {
+    const global = try self.parseVariable("Expext function name.");
+    try self.markInitialized();
+    try self.function(.function);
+    try self.defineVariable(global);
+}
+
 fn expressionStatement(self: *Compiler) !void {
     try self.expression();
     try self.consume(.semicolon, "Expect ';' after expression.");
@@ -455,7 +494,9 @@ fn varDeclaration(self: *Compiler) !void {
 }
 
 fn declaration(self: *Compiler) InterpretError!void {
-    if (self.match(.var_)) {
+    if (self.match(.fun)) {
+        try self.funDeclaration();
+    } else if (self.match(.var_)) {
         try self.varDeclaration();
     } else {
         try self.statement();
@@ -519,6 +560,7 @@ fn parseVariable(self: *Compiler, errorMessage: []const u8) !u8 {
 }
 
 fn markInitialized(self: *Compiler) !void {
+    if (self.scopeDepth == 0) return;
     self.locals[@intCast(self.localCount - 1)].depth = self.scopeDepth;
     try self.emitBytes(@intFromEnum(OpCode.set_local), @intCast(self.localCount - 1));
 }
@@ -530,6 +572,10 @@ fn defineVariable(self: *Compiler, global: u8) !void {
     }
 
     try self.emitBytes(@intFromEnum(OpCode.define_global), global);
+}
+
+fn argumentList(self: *Compiler) !void {
+    
 }
 
 fn identifierConstant(self: *Compiler, name: *Token) !u8 {
@@ -697,6 +743,11 @@ fn binary(self: *Compiler, _: bool) !void {
         .slash => try self.emitByte(@intFromEnum(OpCode.divide)),
         else => unreachable,
     }
+}
+
+fn call(self: *Compiler, _: bool) !void {
+    const arg_count = try self.argumentList();
+    try self.emitBytes(@intFromEnum(OpCode.call), arg_count);
 }
 
 fn literal(self: *Compiler, _: bool) !void {

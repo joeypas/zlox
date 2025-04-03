@@ -41,9 +41,9 @@ pub const Obj = union(ObjType) {
             .string => |str| try out.print("{s}", .{str.asArray()}),
             .function => |fun| {
                 if (fun.name) |name| {
-                    try out.print("<script>", .{name.asArray()});
+                    try out.print("<fn {s}>", .{name.asArray()});
                 } else {
-                    try out.print("<fn ?>", .{});
+                    try out.print("<script>", .{});
                 }
             },
         }
